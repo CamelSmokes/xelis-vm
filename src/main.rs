@@ -1,12 +1,5 @@
-use xelis_vm::{
-    ast::Signature, EnvironmentBuilder, Interpreter, Lexer, Parser, State
-};
-use std::{
-    env,
-    fs,
-    path::Path,
-    time::Instant
-};
+use std::{env, fs, path::Path, time::Instant};
+use xelis_vm::{ast::Signature, EnvironmentBuilder, Interpreter, Lexer, Parser, State};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -21,16 +14,17 @@ fn main() {
     let mut start = Instant::now();
 
     // Apply the lexer to the code
-    let tokens = Lexer::new(code.as_str()).get().unwrap();
+    let tokens = Lexer::new(code.as_str()).get().expect("Lexer Error");
     println!("Lexer: {:?}", start.elapsed());
-
     // Create the default environment
     let builder = EnvironmentBuilder::default();
 
     // Build the program
     start = Instant::now();
     let path = Path::new(file).parent().map(|p| p.to_str()).flatten();
-    let (program, mapper) = Parser::new(path, tokens, &builder).parse().unwrap();
+    let (program, mapper) = Parser::new(path, tokens, &builder)
+        .parse()
+        .expect("Parser Error");
     println!("Parser: {:?}", start.elapsed());
 
     // Create the VM instance
@@ -38,6 +32,13 @@ fn main() {
     let mut state = State::new(None, Some(100));
     start = Instant::now();
     let signature = Signature::new("main".to_owned(), None, Vec::new());
-    let exit = vm.call_entry_function(&mapper.get(&signature).unwrap(), vec![], &mut state).unwrap();
-    println!("Exit code: {} | {} expressions executed in {:?}", exit, state.get_expressions_executed(), start.elapsed());
+    let exit = vm
+        .call_entry_function(&mapper.get(&signature).unwrap(), vec![], &mut state)
+        .unwrap();
+    println!(
+        "Exit code: {} | {} expressions executed in {:?}",
+        exit,
+        state.get_expressions_executed(),
+        start.elapsed()
+    );
 }

@@ -1,33 +1,33 @@
-mod scope;
 mod context;
 mod error;
+mod scope;
+mod shunting_yard;
 mod struct_manager;
 
+use shunting_yard::{ShuntingYard, YardOp};
 pub(crate) use struct_manager::{StructBuilder, StructManager};
 
-pub use self::error::ParserError;
 use self::context::Context;
+pub use self::error::ParserError;
 
 use crate::{
     ast::*,
     mapper::{FunctionMapper, IdMapper, Mapper},
     types::{Struct, Type},
     values::Value,
-    EnvironmentBuilder,
-    IdentifierType,
-    NoHashMap,
+    EnvironmentBuilder, IdentifierType, NoHashMap,
 };
 use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
-    convert::TryInto
+    convert::TryInto,
 };
 
 macro_rules! convert {
     ($a: expr) => {{
         match $a.try_into() {
             Ok(v) => v,
-            Err(_) => return Err(ParserError::InvalidNumberValueForType)
+            Err(_) => return Err(ParserError::InvalidNumberValueForType),
         }
     }};
 }
@@ -39,7 +39,7 @@ pub struct Program {
     // All structures declared
     pub structures: NoHashMap<Struct>,
     // All functions declared
-    pub functions: NoHashMap<FunctionType>
+    pub functions: NoHashMap<FunctionType>,
 }
 
 pub struct Parser<'a> {
@@ -56,11 +56,15 @@ pub struct Parser<'a> {
     // Environment contains all the library linked to the program
     env: &'a EnvironmentBuilder<'a>,
     // TODO: Path to use to import files
-    _path: Option<&'a str>
+    _path: Option<&'a str>,
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(path: Option<&'a str>, tokens: VecDeque<Token<'a>>, env: &'a EnvironmentBuilder) -> Self {
+    pub fn new(
+        path: Option<&'a str>,
+        tokens: VecDeque<Token<'a>>,
+        env: &'a EnvironmentBuilder,
+    ) -> Self {
         let functions_mapper = FunctionMapper::with_parent(env.get_functions_mapper());
 
         Parser {
@@ -70,7 +74,7 @@ impl<'a> Parser<'a> {
             functions_mapper,
             struct_manager: StructManager::new(),
             env,
-            _path: path
+            _path: path,
         }
     }
 
@@ -84,32 +88,56 @@ impl<'a> Parser<'a> {
         self.tokens.pop_front()
     }
 
-    // Peek the next token without consuming it
+    /// Skip tokens while the function passed is true.
+    /// Does not error if there are no tokens.
+    fn skip_while(&mut self, condition: fn(Token) -> bool) -> Result<(), ParserError<'a>> {
+        while let Ok(t) = self.peek() {
+            if condition(t.clone()) {
+                match self.tokens.pop_front() {
+                    Some(_) => (),
+                    None => break,
+                };
+            } else {
+                break;
+            };
+        }
+        Ok(())
+    }
+
+    fn skip_newlines(&mut self) -> Result<(), ParserError<'a>> {
+        self.skip_while(|t| t == Token::Newline)
+    }
+
+    /// Peek the next token without consuming it
     fn peek(&self) -> Result<&Token<'a>, ParserError<'a>> {
         self.tokens.front().ok_or(ParserError::ExpectedToken)
     }
 
-    // Limited to 32 characters
+    /// Returns the next token if it is an identifier. Returns error otherwise.
+    /// Limited to 32 characters
     fn next_identifier(&mut self) -> Result<&'a str, ParserError<'a>> {
         match self.advance()? {
             Token::Identifier(id) => Ok(id),
-            token => Err(ParserError::ExpectedIdentifierToken(token))
+            token => Err(ParserError::ExpectedIdentifierToken(token)),
         }
     }
 
     // Check if the next token is an identifier
     fn peek_is_identifier(&self) -> bool {
-        self.peek().ok().filter(|t| match t {
-            Token::Identifier(_) => true,
-            _ => false
-        }).is_some()
+        self.peek()
+            .ok()
+            .filter(|t| match t {
+                Token::Identifier(_) => true,
+                _ => false,
+            })
+            .is_some()
     }
 
     // Require a specific token
     fn expect_token(&mut self, expected: Token<'a>) -> Result<(), ParserError<'a>> {
         let token = self.advance()?;
         if token != expected {
-            return Err(ParserError::InvalidToken(token, expected)) 
+            return Err(ParserError::InvalidToken(token, expected));
         }
         Ok(())
     }
@@ -130,7 +158,7 @@ impl<'a> Parser<'a> {
         let token = self.advance()?;
         let mut _type = match Type::from_token(token, &self.struct_manager) {
             Some(v) => v,
-            None => return Err(ParserError::TypeNotFound)
+            None => return Err(ParserError::TypeNotFound),
         };
 
         // support multi dimensional arrays
@@ -152,39 +180,54 @@ impl<'a> Parser<'a> {
     }
 
     // get the type of an expression
-    fn get_type_from_expression<'b>(&'b self, on_type: Option<&Type>, expression: &'b Expression, context: &'b Context) -> Result<Cow<'b, Type>, ParserError<'a>> {
+    fn get_type_from_expression<'b>(
+        &'b self,
+        on_type: Option<&Type>,
+        expression: &'b Expression,
+        context: &'b Context,
+    ) -> Result<Cow<'b, Type>, ParserError<'a>> {
         match self.get_type_from_expression_internal(on_type, expression, context)? {
             Some(v) => Ok(v),
-            None => Err(ParserError::EmptyValue)
+            None => Err(ParserError::EmptyValue),
         }
     }
 
     // this function don't verify, but only returns the type of an expression
     // all tests should be done when constructing an expression, not here
-    fn get_type_from_expression_internal<'b>(&'b self, on_type: Option<&Type>, expression: &'b Expression, context: &'b Context) -> Result<Option<Cow<'b, Type>>, ParserError<'a>> {
+    fn get_type_from_expression_internal<'b>(
+        &'b self,
+        on_type: Option<&Type>,
+        expression: &'b Expression,
+        context: &'b Context,
+    ) -> Result<Option<Cow<'b, Type>>, ParserError<'a>> {
         let _type: Cow<'b, Type> = match expression {
             Expression::ArrayConstructor(ref values) => match values.first() {
-                Some(v) => Cow::Owned(Type::Array(Box::new(self.get_type_from_expression(on_type, v, context)?.into_owned()))),
-                None => return Err(ParserError::EmptyArrayConstructor) // cannot determine type from empty array
+                Some(v) => Cow::Owned(Type::Array(Box::new(
+                    self.get_type_from_expression(on_type, v, context)?
+                        .into_owned(),
+                ))),
+                None => return Err(ParserError::EmptyArrayConstructor), // cannot determine type from empty array
             },
             Expression::Variable(ref var_name) => match on_type {
                 Some(t) => {
                     if let Type::Struct(struct_name) = t {
                         let structure = self.struct_manager.get(struct_name)?;
                         if structure.fields.contains_key(var_name) {
-                            Cow::Borrowed(structure.fields.get(var_name).ok_or_else(|| ParserError::UnexpectedMappedVariableId(*var_name))?)
+                            Cow::Borrowed(structure.fields.get(var_name).ok_or_else(|| {
+                                ParserError::UnexpectedMappedVariableId(*var_name)
+                            })?)
                         } else {
-                            return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()))
+                            return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()));
                         }
                     } else {
-                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()))
+                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()));
                     }
-                },
+                }
                 None => {
                     if context.has_variable(var_name) {
                         Cow::Borrowed(context.get_type_of_variable(var_name)?)
                     } else {
-                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()))
+                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()));
                     }
                 }
             },
@@ -194,35 +237,44 @@ impl<'a> Parser<'a> {
                     Some(ref v) => match v {
                         Type::T => match on_type {
                             Some(t) => Cow::Owned(t.get_inner_type().clone()),
-                            None => return Err(ParserError::InvalidTypeT)
+                            None => return Err(ParserError::InvalidTypeT),
                         },
                         Type::Optional(inner) => match inner.as_ref() {
                             Type::T => match on_type {
-                                Some(t) => Cow::Owned(Type::Optional(Box::new(t.get_inner_type().clone()))),
-                                None => return Err(ParserError::InvalidTypeT)
+                                Some(t) => {
+                                    Cow::Owned(Type::Optional(Box::new(t.get_inner_type().clone())))
+                                }
+                                None => return Err(ParserError::InvalidTypeT),
                             },
-                            _ => Cow::Borrowed(v)
+                            _ => Cow::Borrowed(v),
                         },
-                        _ => Cow::Borrowed(v)
+                        _ => Cow::Borrowed(v),
                     },
-                    None => return Err(ParserError::FunctionNoReturnType)
+                    None => return Err(ParserError::FunctionNoReturnType),
                 }
-            },
+            }
             // we have to clone everything due to this
-            Expression::Value(ref val) => match Type::from_value(val, self.struct_manager.inner()) {
-                Some(v) => Cow::Owned(v),
-                None => return Ok(None)
-            },
-            Expression::ArrayCall(path, _) => {
-                match self.get_type_from_expression(on_type, path, context)?.into_owned() {
-                    Type::Array(_type) => Cow::Owned(*_type),
-                    _ => return Err(ParserError::InvalidArrayCall)
+            Expression::Value(ref val) => {
+                match Type::from_value(val, self.struct_manager.inner()) {
+                    Some(v) => Cow::Owned(v),
+                    None => return Ok(None),
                 }
-            },
-            Expression::SubExpression(expr) => self.get_type_from_expression(on_type, expr, context)?,
+            }
+            Expression::ArrayCall(path, _) => {
+                match self
+                    .get_type_from_expression(on_type, path, context)?
+                    .into_owned()
+                {
+                    Type::Array(_type) => Cow::Owned(*_type),
+                    _ => return Err(ParserError::InvalidArrayCall),
+                }
+            }
+            Expression::SubExpression(expr) => {
+                self.get_type_from_expression(on_type, expr, context)?
+            }
             Expression::StructConstructor(name, _) => {
                 if !self.struct_manager.has(name) {
-                    return Err(ParserError::StructNotFound(name.clone()))
+                    return Err(ParserError::StructNotFound(name.clone()));
                 }
 
                 Cow::Owned(Type::Struct(name.clone()))
@@ -230,7 +282,7 @@ impl<'a> Parser<'a> {
             Expression::Path(left, right) => {
                 let var_type = self.get_type_from_expression(on_type, left, context)?;
                 self.get_type_from_expression(Some(&var_type), right, context)?
-            },
+            }
             // Compatibility checks are done when constructing the expression
             Expression::Operator(op, left, right) => match op {
                 // Condition operators
@@ -254,7 +306,7 @@ impl<'a> Parser<'a> {
                     } else {
                         left_type
                     }
-                },
+                }
                 // Number only operators
                 Operator::Multiply
                 | Operator::Divide
@@ -267,15 +319,21 @@ impl<'a> Parser<'a> {
                     let left_type = self.get_type_from_expression(on_type, left, context)?;
                     let right_type = self.get_type_from_expression(on_type, right, context)?;
 
-                    if !left_type.is_number() || !right_type.is_number() || left_type != right_type {
-                        return Err(ParserError::InvalidOperationNotSameType(left_type.into_owned(), right_type.into_owned()))
+                    if !left_type.is_number() || !right_type.is_number() || left_type != right_type
+                    {
+                        return Err(ParserError::InvalidOperationNotSameType(
+                            left_type.into_owned(),
+                            right_type.into_owned(),
+                        ));
                     }
                     left_type
-                }
+                } // Operator::MemberAccess => todo!(),
             },
             Expression::IsNot(_) => Cow::Owned(Type::Bool),
-            Expression::Ternary(_, expr, _) => self.get_type_from_expression(on_type, expr, context)?,
-            Expression::Cast(_, _type) => Cow::Borrowed(_type)
+            Expression::Ternary(_, expr, _) => {
+                self.get_type_from_expression(on_type, expr, context)?
+            }
+            Expression::Cast(_, _type) => Cow::Borrowed(_type),
         };
 
         Ok(Some(_type))
@@ -283,7 +341,13 @@ impl<'a> Parser<'a> {
 
     // Read a function call with the following syntax:
     // function_name(param1, param2, ...)
-    fn read_function_call(&mut self, on_type: Option<&Type>, name: &str, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
+    fn read_function_call(
+        &mut self,
+        on_type: Option<&Type>,
+        name: &str,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
         // we remove the token from the list
         self.expect_token(Token::ParenthesisOpen)?;
         let mut parameters: Vec<Expression> = Vec::new();
@@ -294,7 +358,10 @@ impl<'a> Parser<'a> {
             let expr = self.read_expression(context, mapper)?;
             // We are forced to clone the type because we can't borrow it from the expression
             // I prefer to do this than doing an iteration below
-            types.push(self.get_type_from_expression(None, &expr, context)?.into_owned());
+            types.push(
+                self.get_type_from_expression(None, &expr, context)?
+                    .into_owned(),
+            );
             parameters.push(expr);
 
             if *self.peek()? == Token::Comma {
@@ -302,11 +369,15 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let id = self.functions_mapper.get_compatible(Signature::new(name.to_owned(), on_type.cloned(), types))?;
+        let id = self.functions_mapper.get_compatible(Signature::new(
+            name.to_owned(),
+            on_type.cloned(),
+            types,
+        ))?;
         let func = self.get_function(&id)?;
         // Entry are only callable by external
         if func.is_entry() {
-            return Err(ParserError::FunctionNotFound(id))
+            return Err(ParserError::FunctionNotFound(id));
         }
 
         self.expect_token(Token::ParenthesisClose)?;
@@ -317,7 +388,13 @@ impl<'a> Parser<'a> {
     // struct_name { field_name: value1, field2: value2 }
     // If we have a field that has the same name as a variable we can pass it as following:
     // Example: struct_name { field_name, field2: value2 }
-    fn read_struct_constructor(&mut self, on_type: Option<&Type>, struct_name: IdentifierType, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
+    fn read_struct_constructor(
+        &mut self,
+        on_type: Option<&Type>,
+        struct_name: IdentifierType,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
         self.expect_token(Token::BraceOpen)?;
         let structure = self.struct_manager.get(&struct_name)?.clone();
         let mut fields = NoHashMap::default();
@@ -328,7 +405,7 @@ impl<'a> Parser<'a> {
                     if let Ok(id) = mapper.get(field_name) {
                         Expression::Variable(id)
                     } else {
-                        return Err(ParserError::UnexpectedVariable(field_name.to_owned())) 
+                        return Err(ParserError::UnexpectedVariable(field_name.to_owned()));
                     }
                 }
                 Token::Colon => {
@@ -338,12 +415,15 @@ impl<'a> Parser<'a> {
                     }
                     value
                 }
-                token => return Err(ParserError::UnexpectedToken(token))
+                token => return Err(ParserError::UnexpectedToken(token)),
             };
 
             let field_type = self.get_type_from_expression(on_type, &field_value, context)?;
             if *t != *field_type {
-                return Err(ParserError::InvalidValueType(field_type.into_owned(), t.clone()))
+                return Err(ParserError::InvalidValueType(
+                    field_type.into_owned(),
+                    t.clone(),
+                ));
             }
 
             fields.insert(id.clone(), field_value);
@@ -352,250 +432,275 @@ impl<'a> Parser<'a> {
         Ok(Expression::StructConstructor(struct_name, fields))
     }
 
+    fn read_array_constructor(
+        &mut self,
+        on_type: Option<&Type>,
+        expected_type: Option<&Type>,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
+        // require at least one value in a array constructor
+        let mut expressions: Vec<Expression> = Vec::new();
+        let mut array_type: Option<Type> = None;
+        while *self.peek()? != Token::BracketClose {
+            let expr = self.read_expr(
+                on_type,
+                true,
+                expected_type.map(|t| t.get_inner_type()),
+                context,
+                mapper,
+            )?;
+            match &array_type {
+                // array values must have the same type
+                Some(t) => {
+                    let _type = self.get_type_from_expression(on_type, &expr, context)?;
+                    if *_type != *t {
+                        return Err(ParserError::InvalidTypeInArray(
+                            _type.into_owned(),
+                            t.clone(),
+                        ));
+                    }
+                }
+                None => {
+                    // first value determines the type of array
+                    array_type = Some(
+                        self.get_type_from_expression(on_type, &expr, context)?
+                            .into_owned(),
+                    );
+                }
+            };
+            expressions.push(expr);
+
+            if *self.peek()? == Token::Comma {
+                self.expect_token(Token::Comma)?;
+            }
+        }
+
+        self.expect_token(Token::BracketClose)?;
+        Ok(Expression::ArrayConstructor(expressions))
+    }
+
     // Read an expression with default parameters
-    fn read_expression(&mut self, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
+    fn read_expression(
+        &mut self,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
         self.read_expr(None, true, None, context, mapper)
     }
 
     // Read an expression with the possibility to accept operators
     // number_type is used to force the type of a number
-    fn read_expr(&mut self, on_type: Option<&Type>, accept_operator: bool, expected_type: Option<&Type>, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
-        let mut required_operator = false;
-        let mut last_expression: Option<Expression> = None;
-        while {
+    fn read_expr(
+        &mut self,
+        on_type: Option<&Type>,
+        accept_operator: bool,
+        expected_type: Option<&Type>,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
+        let mut yard = ShuntingYard::new();
+
+        loop {
             let peek = self.peek()?;
-            !peek.should_stop() && ((required_operator == peek.is_operator()) || (*peek == Token::BracketOpen && last_expression.is_none()))
-        } {
-            if !accept_operator && required_operator {
-                break;
-            }
+            match peek {
+                Token::ParenthesisClose if yard.get_paren_depth() == 0 => {
+                    break;
+                }
+                Token::Newline
+                | Token::BracketClose
+                | Token::BraceClose
+                | Token::BraceOpen
+                | Token::Comma
+                | Token::Colon => {
+                    break;
+                }
 
-            let expr: Expression = match self.advance()? {
-                Token::BracketOpen => {
-                    match last_expression {
-                        Some(v) => {
-                            if !self.get_type_from_expression(on_type, &v, context)?.is_array() {
-                                return Err(ParserError::InvalidArrayCall)
-                            }
+                _ => (),
+            };
 
-                            // Index must be of type u64
-                            let index = self.read_expr(on_type, true, Some(&Type::U64), context, mapper)?;
-                            let index_type = self.get_type_from_expression(on_type, &index, context)?;
-                            if *index_type != Type::U64 {
-                                return Err(ParserError::InvalidArrayCallIndexType(index_type.into_owned()))
-                            }
-
-                            self.expect_token(Token::BracketClose)?;
-                            required_operator = !required_operator;
-                            Expression::ArrayCall(Box::new(v), Box::new(index))
-                        },
-                        None => { // require at least one value in a array constructor
-                            let mut expressions: Vec<Expression> = Vec::new();
-                            let mut array_type: Option<Type> = None;
-                            while *self.peek()? != Token::BracketClose {
-                                let expr = self.read_expr(on_type, true, expected_type.map(|t| t.get_inner_type()), context, mapper)?;
-                                match &array_type { // array values must have the same type
-                                    Some(t) => {
-                                        let _type = self.get_type_from_expression(on_type, &expr, context)?;
-                                        if *_type != *t {
-                                            return Err(ParserError::InvalidTypeInArray(_type.into_owned(), t.clone()))
-                                        }
-                                    },
-                                    None => { // first value rules the type of array
-                                        array_type = Some(self.get_type_from_expression(on_type, &expr, context)?.into_owned());
-                                    }
-                                };
-                                expressions.push(expr);
-
-                                if *self.peek()? == Token::Comma {
-                                    self.expect_token(Token::Comma)?;
-                                }
-                            }
-
-                            self.expect_token(Token::BracketClose)?;
-                            Expression::ArrayConstructor(expressions)
-                        }
-                    }
-                },
-                Token::ParenthesisOpen => {
-                    let expr = self.read_expr(None, true, expected_type, context, mapper)?;
-                    self.expect_token(Token::ParenthesisClose)?;
-                    Expression::SubExpression(Box::new(expr))
-                },
-                Token::Identifier(id) => {
-                    match self.peek()? {
-                        // function call
-                        Token::ParenthesisOpen => self.read_function_call(on_type, id, context, mapper)?,
-                        _ => {
-                            match on_type {
-                                // mostly an access to a struct field
-                                Some(t) => {
-                                    if let Type::Struct(struct_name) = t {
-                                        let builder = self.struct_manager.get(struct_name)?;
-                                        
-                                        match builder.mapper.get(id).ok() {
-                                            Some(v) => Expression::Variable(v),
-                                            None => return Err(ParserError::UnexpectedVariable(id.to_owned()))
-                                        }
-                                    } else {
-                                        return Err(ParserError::UnexpectedType(t.clone()))
-                                    }
-                                },
-                                None => {
-                                    if let Ok(id) = mapper.get(id) {
-                                        Expression::Variable(id)
-                                    } else if let Ok(id) = self.struct_manager.get_mapping(&id) {
-                                        self.read_struct_constructor(on_type, id, context, mapper)?
-                                    } else {
-                                        return Err(ParserError::UnexpectedVariable(id.to_owned()))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                Token::U64Value(value) => Expression::Value(match expected_type {
-                    Some(t) => match t {
-                        Type::U8 => Value::U8(convert!(value)),
-                        Type::U16 => Value::U16(convert!(value)),
-                        Type::U32 => Value::U32(convert!(value)),
-                        Type::U64 => Value::U64(value),
-                        Type::U128 => Value::U128(convert!(value)),
-                        Type::Optional(inner) => Value::Optional(Some(Box::new(match inner.as_ref() {
+            match self.advance()? {
+                Token::U64Value(value) => {
+                    // This seems error-prone.
+                    let expr = Expression::Value(match expected_type {
+                        Some(t) => match t {
                             Type::U8 => Value::U8(convert!(value)),
                             Type::U16 => Value::U16(convert!(value)),
                             Type::U32 => Value::U32(convert!(value)),
                             Type::U64 => Value::U64(value),
                             Type::U128 => Value::U128(convert!(value)),
+                            Type::Optional(inner) => {
+                                Value::Optional(Some(Box::new(match inner.as_ref() {
+                                    Type::U8 => Value::U8(convert!(value)),
+                                    Type::U16 => Value::U16(convert!(value)),
+                                    Type::U32 => Value::U32(convert!(value)),
+                                    Type::U64 => Value::U64(value),
+                                    Type::U128 => Value::U128(convert!(value)),
+                                    Type::String => Value::String(value.to_string()),
+                                    _ => return Err(ParserError::ExpectedNumberType),
+                                })))
+                            }
                             Type::String => Value::String(value.to_string()),
-                            _ => return Err(ParserError::ExpectedNumberType)
-                        }))),
-                        Type::String => Value::String(value.to_string()),
-                        _ => return Err(ParserError::ExpectedNumberType)
-                    },
-                    None => Value::U64(value)
-                }),
-                Token::U128Value(value) => Expression::Value(Value::U128(value)),
-                Token::StringValue(value) => Expression::Value(Value::String(value.into_owned())),
-                Token::True => Expression::Value(Value::Boolean(true)),
-                Token::False => Expression::Value(Value::Boolean(false)),
-                Token::Null => Expression::Value(Value::Null),
-                Token::Dot => {
-                    match last_expression {
-                        Some(value) => {
-                            let _type = self.get_type_from_expression(on_type, &value, context)?.into_owned();
-                            let right_expr = self.read_expr(Some(&_type), false, expected_type, context, mapper)?;
-                            // because we read operator DOT + right expression
-                            required_operator = !required_operator;
-                            Expression::Path(Box::new(value), Box::new(right_expr))
+                            _ => return Err(ParserError::ExpectedNumberType),
                         },
-                        None => return Err(ParserError::UnexpectedToken(Token::Dot))
-                    }
-                },
-                Token::IsNot => { // it's an operator, but not declared as
-                    let expr = self.read_expression(context, mapper)?;
-                    let expr_type = self.get_type_from_expression(on_type, &expr, context)?;
-                    if *expr_type != Type::Bool {
-                        return Err(ParserError::InvalidValueType(expr_type.into_owned(), Type::Bool))
-                    }
+                        None => Value::U64(value),
+                    });
+                    yard.insert_expr(expr);
+                }
 
-                    Expression::IsNot(Box::new(expr))
-                },
-                Token::OperatorTernary => match last_expression { // condition ? expr : expr
-                    Some(expr) => {
-                        if *self.get_type_from_expression(on_type, &expr, context)? != Type::Bool {
-                            return Err(ParserError::InvalidCondition(Type::Bool, expr))
-                        }
+                Token::U128Value(val) => yard.insert_expr(Expression::Value(Value::U128(val))),
+                Token::StringValue(val) => {
+                    yard.insert_expr(Expression::Value(Value::String(val.to_string())))
+                }
+                Token::Null => yard.insert_expr(Expression::Value(Value::Null)),
+                Token::True => yard.insert_expr(Expression::Value(Value::Boolean(true))),
+                Token::False => yard.insert_expr(Expression::Value(Value::Boolean(false))),
 
-                        let valid_expr = self.read_expr(on_type, true, expected_type, context, mapper)?;
-                        let first_type = self.get_type_from_expression(on_type, &valid_expr, context)?.into_owned();
-                        self.expect_token(Token::Colon)?;
-                        let else_expr = self.read_expr(on_type, true, expected_type, context, mapper)?;
-                        let else_type = self.get_type_from_expression(on_type, &else_expr, context)?;
-                        
-                        if first_type != *else_type { // both expr should have the SAME type.
-                            return Err(ParserError::InvalidValueType(else_type.into_owned(), first_type))
-                        }
-                        required_operator = !required_operator;
-                        Expression::Ternary(Box::new(expr), Box::new(valid_expr), Box::new(else_expr))
-                    },
-                    None => return Err(ParserError::InvalidTernaryNoPreviousExpression)
-                },
-                Token::As => {
-                    let previous_expr = last_expression.ok_or_else(|| ParserError::InvalidOperation)?;
-                    let left_type = self.get_type_from_expression(on_type, &previous_expr, context)?.into_owned();
-                    let right_type = self.read_type()?;
-
-                    if !left_type.is_castable_to(&right_type) {
-                        return Err(ParserError::CastError(left_type, right_type))
-                    }
-                    required_operator = !required_operator;
-                    Expression::Cast(Box::new(previous_expr), right_type)
-                },
-                token => {
-                    match last_expression {
-                        Some(previous_expr) => {
-                            required_operator = !required_operator;
-
-                            let left_type = self.get_type_from_expression(on_type, &previous_expr, context)?.into_owned();
-                            // Parse the operator for this token
-                            let op = match Operator::value_of(&token) {
-                                Some(op) => op,
-                                None => return Err(ParserError::OperatorNotFound(token))
-                            };
-
-                            let expr = self.read_expr(on_type, !op.is_bool_operator(), Some(&left_type), context, mapper)?;
-                            if let Some(right_type) = self.get_type_from_expression_internal(on_type, &expr, context)? {
-                                match &op {
-                                    Operator::Minus | Operator::Rem | Operator::Divide | Operator::Multiply
-                                    | Operator::Assign(_) | Operator::BitwiseLeft | Operator::BitwiseRight
-                                    | Operator::GreaterThan | Operator::LessThan | Operator::LessOrEqual
-                                    | Operator::GreaterOrEqual => {
-                                        if left_type != *right_type {
-                                            return Err(ParserError::InvalidOperationNotSameType(left_type, right_type.into_owned()))
-                                        }
-                                    },
-                                    Operator::Plus => {
-                                        if left_type != *right_type && !(left_type == Type::String || *right_type == Type::String) {
-                                            return Err(ParserError::InvalidOperationNotSameType(left_type, right_type.into_owned()))
-                                        }
-                                    },
-                                    Operator::And | Operator::Or => {
-                                        if left_type != Type::Bool {
-                                            return Err(ParserError::InvalidOperationNotSameType(left_type, Type::Bool))
-                                        }
-
-                                        if *right_type != Type::Bool {
-                                            return Err(ParserError::InvalidOperationNotSameType(right_type.into_owned(), Type::Bool))
-                                        }
-                                    },
-                                    _ => if left_type != *right_type {
-                                        return Err(ParserError::InvalidOperationNotSameType(left_type, right_type.into_owned()))
-                                    }
-                                };
-
-                                Expression::Operator(op, Box::new(previous_expr), Box::new(expr))
-                            } else {
-                                match op {
-                                    Operator::Equals | Operator::NotEquals |
-                                    Operator::Assign(None) if left_type.allow_null() => Expression::Operator(op, Box::new(previous_expr), Box::new(expr)),
-                                    _ => return Err(ParserError::IncompatibleNullWith(left_type))
+                Token::Identifier(name) => {
+                    let peek = self.peek()?;
+                    match peek {
+                        Token::ParenthesisOpen => {
+                            let last_op = yard.peek_operator();
+                            match last_op {
+                                // Method Call
+                                Some(YardOp::Path) => {
+                                    todo!()
+                                }
+                                // Function Call
+                                _ => {
+                                    let func =
+                                        self.read_function_call(None, name, context, mapper)?;
+                                    yard.insert_expr(func);
                                 }
                             }
                         }
-                        None => return Err(ParserError::InvalidOperation)
+                        // Array access
+                        Token::BracketOpen => {
+                            let var = if let Ok(id) = mapper.get(name) {
+                                Expression::Variable(id)
+                            } else {
+                                return Err(ParserError::UnexpectedVariable(name.to_owned()));
+                            };
+                            yard.insert_expr(var);
+                            yard.insert_op(YardOp::Subscript, self, context)?;
+                            let index = self.read_expr(
+                                on_type,
+                                accept_operator,
+                                Some(&Type::U64),
+                                context,
+                                mapper,
+                            )?;
+                            yard.insert_expr(index);
+                        }
+                        // Struct initialization
+                        Token::BraceOpen => {
+                            let var = if let Ok(id) = mapper.get(name) {
+                                id
+                            } else {
+                                return Err(ParserError::UnexpectedVariable(name.to_owned()));
+                            };
+                            let struct_init =
+                                self.read_struct_constructor(on_type, var, context, mapper)?;
+                            yard.insert_expr(struct_init);
+                        }
+
+                        // Struct path navigation
+                        _ if yard.peek_operator() == Some(&YardOp::Path) => {
+                            // let last = yard.pop_expression()?;
+                            // let _type = self
+                            //     .get_type_from_expression(on_type, &last, context)?
+                            //     .into_owned();
+                            // let member_name = self.next_identifier()?;
+                            // let Type::Struct(struct_id) = _type else {
+                            //     todo!()
+                            // };
+
+                            // let var = if let Ok(id) = mapper.get(member_name) {
+                            //     Expression::Variable(id)
+                            // } else {
+                            //     return Err(ParserError::UnexpectedVariable(
+                            //         member_name.to_owned(),
+                            //     ));
+                            // };
+
+                            // let builder = self.struct_manager.get(&struct_id)?;
+
+                            // match builder.mapper.get(struct_id).ok() {
+                            //     Some(v) => Expression::Variable(v),
+                            //     None => return Err(ParserError::UnexpectedVariable(id.to_owned())),
+                            // }
+
+                            // Expression::Path(Box::new(last), Box::new(right_expr));
+
+                            // println!("{:?}", last);
+                            todo!();
+                        }
+                        // Otherwise a variable
+                        _ => {
+                            let var = if let Ok(id) = mapper.get(name) {
+                                Expression::Variable(id)
+                            } else {
+                                return Err(ParserError::UnexpectedVariable(name.to_owned()));
+                            };
+                            yard.insert_expr(var);
+                        }
                     }
                 }
-            };
+                Token::BracketOpen => {
+                    yard.insert_expr(self.read_array_constructor(
+                        on_type,
+                        expected_type,
+                        context,
+                        mapper,
+                    )?);
+                }
+                Token::OperatorTernary => {
+                    let expr = yard.pop_expression()?;
+                    if *self.get_type_from_expression(on_type, &expr, context)? != Type::Bool {
+                        return Err(ParserError::InvalidCondition(Type::Bool, expr));
+                    }
 
-            last_expression = Some(expr);
-            required_operator = !required_operator;
-        }
+                    let valid_expr =
+                        self.read_expr(on_type, true, expected_type, context, mapper)?;
+                    let first_type = self
+                        .get_type_from_expression(on_type, &valid_expr, context)?
+                        .into_owned();
+                    self.expect_token(Token::Colon)?;
+                    let else_expr =
+                        self.read_expr(on_type, true, expected_type, context, mapper)?;
+                    let else_type = self.get_type_from_expression(on_type, &else_expr, context)?;
 
-        match last_expression {
-            Some(v) => Ok(v),
-            None => Err(ParserError::NotImplemented)
+                    if first_type != *else_type {
+                        // both expr should have the SAME type.
+                        return Err(ParserError::InvalidValueType(
+                            else_type.into_owned(),
+                            first_type,
+                        ));
+                    }
+                    let ternary_expression = Expression::Ternary(
+                        Box::new(expr),
+                        Box::new(valid_expr),
+                        Box::new(else_expr),
+                    );
+                    yard.insert_expr(ternary_expression);
+                }
+                Token::IsNot => yard.insert_op(YardOp::LogicalNot, self, context)?,
+                Token::As => yard.insert_op(YardOp::Cast(self.read_type()?), self, context)?,
+                Token::Dot => yard.insert_op(YardOp::Path, self, context)?,
+                op_token if op_token.is_operator() => {
+                    let Some(op) = Operator::value_of(&op_token) else {
+                        return Err(ParserError::OperatorNotFound(op_token));
+                    };
+                    yard.insert_op(YardOp::Standard(op), self, context)?;
+                }
+                Token::ParenthesisOpen => yard.open_paren(),
+                Token::ParenthesisClose => yard.close_paren(self, context)?,
+
+                token => return Err(ParserError::UnexpectedToken(token)),
+            }
         }
+        let expression_tree = yard.finish(self, context)?;
+        Ok(expression_tree)
     }
 
     /**
@@ -603,7 +708,13 @@ impl<'a> Parser<'a> {
      *     ...
      * }
      */
-    fn read_body(&mut self, context: &mut Context, return_type: &Option<Type>, consume_brace: bool, mapper: &mut IdMapper<'a>) -> Result<Vec<Statement>, ParserError<'a>> {
+    fn read_body(
+        &mut self,
+        context: &mut Context,
+        return_type: &Option<Type>,
+        consume_brace: bool,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Statement>, ParserError<'a>> {
         context.begin_scope();
         let statements = self.read_statements(context, return_type, consume_brace, mapper)?;
         context.end_scope();
@@ -618,23 +729,30 @@ impl<'a> Parser<'a> {
      * - Must provide a value type
      * - If no value is set, Null is set by default
      */
-    fn read_variable(&mut self, context: &mut Context, mapper: &mut IdMapper<'a>, is_const: bool) -> Result<DeclarationStatement, ParserError<'a>> {
+    fn read_variable(
+        &mut self,
+        context: &mut Context,
+        mapper: &mut IdMapper<'a>,
+        is_const: bool,
+    ) -> Result<DeclarationStatement, ParserError<'a>> {
         let name: &'a str = self.next_identifier()?;
 
         // Variable name must be unique
         // Shadowing is not allowed atm
         if mapper.has_variable(name) {
-            return Err(ParserError::VariableNameAlreadyUsed(name.to_owned()))
+            return Err(ParserError::VariableNameAlreadyUsed(name.to_owned()));
         }
 
         // Constants must be uppercase
         if is_const && name.to_uppercase() != name {
-            return Err(ParserError::ConstantNameNotUppercase(name.to_owned()))
+            return Err(ParserError::ConstantNameNotUppercase(name.to_owned()));
         }
 
         // Variable name must start with a alphabetic character
         if !name.starts_with(char::is_alphabetic) {
-            return Err(ParserError::VariableMustStartWithAlphabetic(name.to_owned()))
+            return Err(ParserError::VariableMustStartWithAlphabetic(
+                name.to_owned(),
+            ));
         }
 
         self.expect_token(Token::Colon)?;
@@ -646,20 +764,28 @@ impl<'a> Parser<'a> {
             let expr_type = match self.get_type_from_expression_internal(None, &expr, context) {
                 Ok(opt_type) => match opt_type {
                     Some(v) => v,
-                    None => if value_type.is_optional() {
-                        Cow::Owned(value_type.clone())
-                    } else {
-                        return Err(ParserError::NoValueType)
+                    None => {
+                        if value_type.is_optional() {
+                            Cow::Owned(value_type.clone())
+                        } else {
+                            return Err(ParserError::NoValueType);
+                        }
                     }
                 },
-                Err(e) => match e { // support empty array declaration
-                    ParserError::EmptyArrayConstructor if value_type.is_array() => Cow::Owned(value_type.clone()),
-                    _ => return Err(e)
-                }
+                Err(e) => match e {
+                    // support empty array declaration
+                    ParserError::EmptyArrayConstructor if value_type.is_array() => {
+                        Cow::Owned(value_type.clone())
+                    }
+                    _ => return Err(e),
+                },
             };
 
             if !expr_type.is_compatible_with(&value_type) {
-                return Err(ParserError::InvalidValueType(expr_type.into_owned(), value_type))
+                return Err(ParserError::InvalidValueType(
+                    expr_type.into_owned(),
+                    value_type,
+                ));
             }
 
             expr
@@ -673,11 +799,16 @@ impl<'a> Parser<'a> {
         Ok(DeclarationStatement {
             id,
             value_type,
-            value
+            value,
         })
     }
 
-    fn read_loop_body(&mut self, context: &mut Context, return_type: &Option<Type>, mapper: &mut IdMapper<'a>) -> Result<Vec<Statement>, ParserError<'a>> {
+    fn read_loop_body(
+        &mut self,
+        context: &mut Context,
+        return_type: &Option<Type>,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Statement>, ParserError<'a>> {
         let old_value = context.is_in_a_loop(); // support loop in loop
         context.set_in_a_loop(true);
         let statements = self.read_body(context, return_type, true, mapper)?;
@@ -689,7 +820,13 @@ impl<'a> Parser<'a> {
     // Read all statements in a block
     // return type is used to verify that the last statement is a return with a valid value type
     // consume_brace is used to know if we should consume the open brace
-    fn read_statements(&mut self, context: &mut Context, return_type: &Option<Type>, consume_brace: bool, mapper: &mut IdMapper<'a>) -> Result<Vec<Statement>, ParserError<'a>> {
+    fn read_statements(
+        &mut self,
+        context: &mut Context,
+        return_type: &Option<Type>,
+        consume_brace: bool,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Statement>, ParserError<'a>> {
         if consume_brace {
             self.expect_token(Token::BraceOpen)?;
         }
@@ -697,20 +834,27 @@ impl<'a> Parser<'a> {
         let mut statements: Vec<Statement> = Vec::new();
         while let Some(token) = self.next() {
             let statement: Statement = match token {
+                Token::Newline => continue,
                 Token::BraceClose => break,
-                Token::For => { // Example: for i: u64 = 0; i < 10; i += 1 {}
+                Token::For => {
+                    // Example: for i: u64 = 0; i < 10; i += 1 {}
                     context.begin_scope();
                     let var = self.read_variable(context, mapper, false)?;
                     let condition = self.read_expression(context, mapper)?;
-                    let condition_type = self.get_type_from_expression(None, &condition, context)?;
-                    if  *condition_type != Type::Bool {
-                        return Err(ParserError::InvalidCondition(condition_type.into_owned(), condition))
+                    let condition_type =
+                        self.get_type_from_expression(None, &condition, context)?;
+                    if *condition_type != Type::Bool {
+                        return Err(ParserError::InvalidCondition(
+                            condition_type.into_owned(),
+                            condition,
+                        ));
                     }
 
                     let increment = self.read_expression(context, mapper)?;
-                    match &increment { // allow only assignations on this expr
-                        Expression::Operator(op, _, _) if op.is_assignation() => {},
-                        _ => return Err(ParserError::InvalidForExpression(increment))
+                    match &increment {
+                        // allow only assignations on this expr
+                        Expression::Operator(op, _, _) if op.is_assignation() => {}
+                        _ => return Err(ParserError::InvalidForExpression(increment)),
                     };
 
                     let statements = self.read_loop_body(context, return_type, mapper)?;
@@ -718,7 +862,8 @@ impl<'a> Parser<'a> {
 
                     Statement::For(var, condition, increment, statements)
                 }
-                Token::ForEach => { // Example: foreach a in array {}
+                Token::ForEach => {
+                    // Example: foreach a in array {}
                     context.begin_scope();
                     let variable = self.next_identifier()?;
                     self.expect_token(Token::In)?;
@@ -727,7 +872,7 @@ impl<'a> Parser<'a> {
 
                     // verify that we can iter on it
                     if !expr_type.is_array() {
-                        return Err(ParserError::ExpectedArrayType)
+                        return Err(ParserError::ExpectedArrayType);
                     }
 
                     let id = mapper.register(Cow::Borrowed(variable))?;
@@ -736,23 +881,32 @@ impl<'a> Parser<'a> {
                     context.end_scope();
 
                     Statement::ForEach(id, expr, statements)
-                },
-                Token::While => { // Example: while i < 10 {}
+                }
+                Token::While => {
+                    // Example: while i < 10 {}
                     let condition = self.read_expression(context, mapper)?;
-                    let condition_type = self.get_type_from_expression(None, &condition, context)?;
-                    if  *condition_type != Type::Bool {
-                        return Err(ParserError::InvalidCondition(condition_type.into_owned(), condition))
+                    let condition_type =
+                        self.get_type_from_expression(None, &condition, context)?;
+                    if *condition_type != Type::Bool {
+                        return Err(ParserError::InvalidCondition(
+                            condition_type.into_owned(),
+                            condition,
+                        ));
                     }
 
                     let statements = self.read_loop_body(context, return_type, mapper)?;
 
                     Statement::While(condition, statements)
-                },
+                }
                 Token::If => {
                     let condition = self.read_expression(context, mapper)?;
-                    let condition_type = self.get_type_from_expression(None, &condition, context)?;
-                    if  *condition_type != Type::Bool {
-                        return Err(ParserError::InvalidCondition(condition_type.into_owned(), condition))
+                    let condition_type =
+                        self.get_type_from_expression(None, &condition, context)?;
+                    if *condition_type != Type::Bool {
+                        return Err(ParserError::InvalidCondition(
+                            condition_type.into_owned(),
+                            condition,
+                        ));
                     }
 
                     let body = self.read_body(context, return_type, true, mapper)?;
@@ -769,15 +923,21 @@ impl<'a> Parser<'a> {
                     };
 
                     Statement::If(condition, body, else_statement)
-                },
-                Token::BraceOpen => Statement::Scope(self.read_body(context, return_type, false, mapper)?),
+                }
+                Token::BraceOpen => {
+                    Statement::Scope(self.read_body(context, return_type, false, mapper)?)
+                }
                 Token::Let => Statement::Variable(self.read_variable(context, mapper, false)?),
                 Token::Return => {
                     let opt: Option<Expression> = if let Some(return_type) = return_type {
-                        let expr = self.read_expr(None, true, Some(return_type), context, mapper)?;
+                        let expr =
+                            self.read_expr(None, true, Some(return_type), context, mapper)?;
                         let expr_type = self.get_type_from_expression(None, &expr, context)?;
                         if *expr_type != *return_type {
-                            return Err(ParserError::InvalidValueType(expr_type.into_owned(), return_type.clone()))
+                            return Err(ParserError::InvalidValueType(
+                                expr_type.into_owned(),
+                                return_type.clone(),
+                            ));
                         }
                         Some(expr)
                     } else {
@@ -785,6 +945,7 @@ impl<'a> Parser<'a> {
                     };
 
                     // we can't have anything after a return
+                    self.skip_newlines()?;
                     if *self.peek()? != Token::BraceClose {
                         return Err(ParserError::DeadCodeNotAllowed);
                     }
@@ -802,7 +963,7 @@ impl<'a> Parser<'a> {
                     }
 
                     Statement::Continue
-                },
+                }
                 Token::Break => {
                     if !context.is_in_a_loop() {
                         return Err(ParserError::UnexpectedToken(Token::Break));
@@ -814,7 +975,7 @@ impl<'a> Parser<'a> {
                     }
 
                     Statement::Break
-                },
+                }
                 token => {
                     self.tokens.push_front(token);
                     Statement::Expression(self.read_expression(context, mapper)?)
@@ -827,20 +988,27 @@ impl<'a> Parser<'a> {
     }
 
     // Read the parameters for a function
-    fn read_parameters(&mut self, mapper: &mut IdMapper<'a>) -> Result<Vec<Parameter>, ParserError<'a>> {
+    fn read_parameters(
+        &mut self,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Parameter>, ParserError<'a>> {
         let mut parameters: Vec<Parameter> = Vec::new();
         while self.peek_is_identifier() {
             let name = self.next_identifier()?;
             self.expect_token(Token::Colon)?;
             let value_type = self.read_type()?;
 
-            parameters.push(Parameter::new(mapper.register(Cow::Borrowed(name))?, value_type));
+            parameters.push(Parameter::new(
+                mapper.register(Cow::Borrowed(name))?,
+                value_type,
+            ));
 
             if *self.peek()? != Token::Comma {
                 break;
             }
 
             self.expect_token(Token::Comma)?;
+            self.skip_newlines()?;
         }
 
         Ok(parameters)
@@ -862,7 +1030,7 @@ impl<'a> Parser<'a> {
                 }
                 Statement::Return(_) => {
                     ok = true;
-                },
+                }
                 _ => {}
             }
         }
@@ -881,7 +1049,12 @@ impl<'a> Parser<'a> {
      * - Signature is based on function name, and parameters
      * - Entry function is a "public callable" function and must return a u64 value
      */
-    fn read_function(&mut self, entry: bool, context: &mut Context, constants_mapper: &IdMapper<'a>) -> Result<(), ParserError<'a>> {
+    fn read_function(
+        &mut self,
+        entry: bool,
+        context: &mut Context,
+        constants_mapper: &IdMapper<'a>,
+    ) -> Result<(), ParserError<'a>> {
         context.begin_scope();
 
         // we need to clone the constants mapper to use it as our own local mapper
@@ -896,10 +1069,10 @@ impl<'a> Parser<'a> {
             if let Type::Struct(struct_name) = &for_type {
                 // only types that are declared by the same program
                 if !self.struct_manager.has(struct_name) {
-                    return Err(ParserError::StructNotFound(struct_name.clone()))
+                    return Err(ParserError::StructNotFound(struct_name.clone()));
                 }
             } else {
-                return Err(ParserError::InvalidFunctionType(for_type))
+                return Err(ParserError::InvalidFunctionType(for_type));
             }
 
             let id = mapper.register(Cow::Borrowed(instance_name))?;
@@ -909,7 +1082,7 @@ impl<'a> Parser<'a> {
             (Some(id), Some(for_type), self.next_identifier()?)
         } else {
             let Token::Identifier(name) = token else {
-                return Err(ParserError::ExpectedIdentifierToken(token))
+                return Err(ParserError::ExpectedIdentifierToken(token));
             };
             (None, None, name)
         };
@@ -922,11 +1095,12 @@ impl<'a> Parser<'a> {
         let return_type: Option<Type> = if entry {
             // an entrypoint cannot be a method
             if for_type.is_some() {
-                return Err(ParserError::EntryFunctionCannotHaveForType)
+                return Err(ParserError::EntryFunctionCannotHaveForType);
             }
 
             Some(Type::U64)
-        } else if *self.peek()? == Token::Colon { // read returned type
+        } else if *self.peek()? == Token::Colon {
+            // read returned type
             self.advance()?;
             Some(self.read_type()?)
         } else {
@@ -934,9 +1108,13 @@ impl<'a> Parser<'a> {
         };
 
         let types: Vec<Type> = parameters.iter().map(|p| p.get_type().clone()).collect();
-        let id = self.functions_mapper.register(Signature::new(name.to_owned(), for_type.clone(), types))?;
+        let id = self.functions_mapper.register(Signature::new(
+            name.to_owned(),
+            for_type.clone(),
+            types,
+        ))?;
         if self.has_function(&id) {
-            return Err(ParserError::FunctionSignatureAlreadyExist) 
+            return Err(ParserError::FunctionSignatureAlreadyExist);
         }
 
         let has_return_type = return_type.is_some();
@@ -951,7 +1129,7 @@ impl<'a> Parser<'a> {
 
         // verify that the function ends with a return
         if has_return_type && !self.ends_with_return(&statements)? {
-            return Err(ParserError::NoReturnFound)
+            return Err(ParserError::NoReturnFound);
         }
 
         let function = match entry {
@@ -962,7 +1140,7 @@ impl<'a> Parser<'a> {
                 parameters,
                 statements,
                 return_type,
-            ))
+            )),
         };
 
         // push function before reading statements to allow recursive calls
@@ -979,18 +1157,18 @@ impl<'a> Parser<'a> {
         let path = self.advance()?;
 
         let Token::StringValue(path) = path else {
-            return Err(ParserError::InvalidImport)
+            return Err(ParserError::InvalidImport);
         };
 
         // We don't allow absolute path or path that contains ".."
         if path.starts_with("/") || path.contains("..") {
-            return Err(ParserError::InvalidImportPath(path.into_owned()))
+            return Err(ParserError::InvalidImportPath(path.into_owned()));
         }
 
         // If its a local import, we will import its content directly
         let is_local = path.ends_with(".xel");
         if !is_local {
-            return Err(ParserError::NotImplemented)
+            return Err(ParserError::NotImplemented);
         }
 
         // let content = fs::read_to_string(path.as_ref()).map_err(|e| ParserError::InvalidImportPath(e.to_string()))?;
@@ -1017,7 +1195,10 @@ impl<'a> Parser<'a> {
     fn get_function(&self, name: &IdentifierType) -> Result<&FunctionType, ParserError<'a>> {
         match self.env.get_functions().get(name) {
             Some(func) => Ok(func),
-            None => self.functions.get(name).ok_or(ParserError::FunctionNotFound(name.clone()))
+            None => self
+                .functions
+                .get(name)
+                .ok_or(ParserError::FunctionNotFound(name.clone())),
         }
     }
 
@@ -1031,33 +1212,33 @@ impl<'a> Parser<'a> {
         let name = self.next_identifier()?;
         let mut chars = name.chars();
         if !chars.all(|c| c.is_ascii_alphanumeric()) {
-            return Err(ParserError::InvalidStructureName(name.to_owned()))
+            return Err(ParserError::InvalidStructureName(name.to_owned()));
         }
 
         // check if the first letter is in uppercase
         match name.chars().nth(0) {
             Some(v) => {
                 if !v.is_ascii_alphabetic() || !v.is_uppercase() {
-                    return Err(ParserError::InvalidStructureName(name.to_owned()))
+                    return Err(ParserError::InvalidStructureName(name.to_owned()));
                 }
-            },
-            None => return Err(ParserError::EmptyStructName)
+            }
+            None => return Err(ParserError::EmptyStructName),
         };
 
         let mut mapper: Mapper<'a, Cow<str>> = IdMapper::new();
         self.expect_token(Token::BraceOpen)?;
+        self.skip_newlines()?;
+
         let mut fields: NoHashMap<Type> = NoHashMap::default();
         for param in self.read_parameters(&mut mapper)? {
             let (name, value_type) = param.consume();
             fields.insert(name, value_type);
         }
+        self.skip_newlines()?;
 
         self.expect_token(Token::BraceClose)?;
 
-        Ok((name, StructBuilder {
-            fields,
-            mapper,
-        }))
+        Ok((name, StructBuilder { fields, mapper }))
     }
 
     // Parse the tokens and return a Program
@@ -1075,23 +1256,29 @@ impl<'a> Parser<'a> {
                     let var = self.read_variable(&mut context, &mut constants_mapper, true)?;
                     let id = var.id;
                     if !self.constants.insert(var) {
-                        return Err(ParserError::VariableIdAlreadyUsed(id))
+                        return Err(ParserError::VariableIdAlreadyUsed(id));
                     }
-                },
+                }
                 Token::Function => self.read_function(false, &mut context, &constants_mapper)?,
                 Token::Entry => self.read_function(true, &mut context, &constants_mapper)?,
                 Token::Struct => {
                     let (name, builder) = self.read_struct()?;
                     self.struct_manager.add(name.to_owned(), builder)?;
-                },
-                token => return Err(ParserError::UnexpectedToken(token))
+                }
+                Token::Newline => {
+                    continue;
+                }
+                token => return Err(ParserError::UnexpectedToken(token)),
             };
         }
 
-        Ok((Program {
-            constants: self.constants,
-            structures: self.struct_manager.finalize(),
-            functions: self.functions,
-        }, self.functions_mapper))
+        Ok((
+            Program {
+                constants: self.constants,
+                structures: self.struct_manager.finalize(),
+                functions: self.functions,
+            },
+            self.functions_mapper,
+        ))
     }
 }

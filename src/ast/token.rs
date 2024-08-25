@@ -34,6 +34,7 @@ pub enum Token<'a> {
     Dot,
     Comma,
     Colon,
+    Semicolon,
     Return,
     If,
     Else,
@@ -44,6 +45,8 @@ pub enum Token<'a> {
     Continue,
     In,
     IsNot, // !
+
+    Newline,
 
     ParenthesisOpen,
     ParenthesisClose,
@@ -86,7 +89,7 @@ pub enum Token<'a> {
 
     Import,
     From,
-    As
+    As,
 }
 
 impl Token<'_> {
@@ -173,7 +176,6 @@ impl Token<'_> {
             "import" => Import,
             "from" => From,
             "as" => As,
-
             _ => return None,
         })
     }
@@ -182,13 +184,13 @@ impl Token<'_> {
         use Token::*;
         match self {
             ParenthesisClose | BraceOpen | BraceClose | BracketClose => true,
-            _ => false
+            _ => false,
         }
     }
     pub fn is_operator(&self) -> bool {
         use Token::*;
         match self {
-            | OperatorEquals
+            OperatorEquals
             | OperatorNotEquals
             | OperatorAnd
             | OperatorOr
@@ -228,14 +230,7 @@ impl Token<'_> {
     pub fn is_type(&self) -> bool {
         use Token::*;
         match self {
-            | U8
-            | U16
-            | U64
-            | U128
-            | Bool
-            | String
-            | Identifier(_)
-            | Optional(_) => true,
+            U8 | U16 | U64 | U128 | Bool | String | Identifier(_) | Optional(_) => true,
             _ => false,
         }
     }

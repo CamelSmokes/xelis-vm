@@ -2,15 +2,16 @@ use crate::ast::Token;
 use std::{borrow::Cow, collections::VecDeque};
 
 #[derive(Debug)]
-pub enum LexerError { // left is line, right is column
+pub enum LexerError {
+    // left is line, right is column
     EndOfFile,
     ParseToNumber(usize, usize),
     NoTokenFound(usize, usize),
     ExpectedChar(usize, usize),
-    ExpectedType
+    ExpectedType,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TokenResult<'a> {
     // the token value
     pub token: Token<'a>,
@@ -19,7 +20,7 @@ pub struct TokenResult<'a> {
     // the column number where the token starts
     pub column_start: usize,
     // the column number where the token ends
-    pub column_end: usize
+    pub column_end: usize,
 }
 
 pub struct Lexer<'a> {
@@ -34,7 +35,7 @@ pub struct Lexer<'a> {
     // current line number we are reading
     line: usize,
     // current column number we are reading
-    column: usize
+    column: usize,
 }
 
 impl<'a> Lexer<'a> {
@@ -45,13 +46,14 @@ impl<'a> Lexer<'a> {
             chars: input.chars().collect::<Vec<_>>().into(),
             pos: 0,
             line: 1,
-            column: 0
+            column: 0,
         }
     }
 
     // peek the next character
     fn peek(&self) -> Result<char, LexerError> {
-        self.chars.front()
+        self.chars
+            .front()
             .copied()
             .ok_or_else(|| LexerError::ExpectedChar(self.line, self.column))
     }
@@ -74,7 +76,9 @@ impl<'a> Lexer<'a> {
     // get a str slice of the input
     // this is done to prevent copying the string
     fn get_slice(&self, start: usize, end: usize) -> Result<&'a str, LexerError> {
-        self.input.get(start..end).ok_or_else(|| LexerError::EndOfFile)
+        self.input
+            .get(start..end)
+            .ok_or_else(|| LexerError::EndOfFile)
     }
 
     // push a character back to the list
@@ -97,13 +101,13 @@ impl<'a> Lexer<'a> {
             token: t,
             line: self.line,
             column_start: self.column,
-            column_end: self.column + n
+            column_end: self.column + n,
         })
     }
 
     // read characters while the delimiter is true
     fn read_while<F>(&mut self, delimiter: F, diff: usize) -> Result<&'a str, LexerError>
-    where 
+    where
         F: Fn(&char) -> bool,
     {
         let init_pos = self.pos - diff;
@@ -121,7 +125,7 @@ impl<'a> Lexer<'a> {
 
     // this will consume characters until the delimiter returns true
     fn skip_until<F>(&mut self, delimiter: F) -> Result<(), LexerError>
-    where 
+    where
         F: Fn(&char) -> bool,
     {
         loop {
@@ -169,7 +173,7 @@ impl<'a> Lexer<'a> {
 
         Ok(match transformed_string {
             Some(value) => Cow::Owned(value),
-            None => Cow::Borrowed(self.get_slice(init_pos, self.pos - 1)?)
+            None => Cow::Borrowed(self.get_slice(init_pos, self.pos - 1)?),
         })
     }
 
@@ -219,20 +223,26 @@ impl<'a> Lexer<'a> {
                 value.push_str(self.get_slice(init_pos, self.pos - offset)?);
                 value
             },
-            None => self.get_slice(init_pos, self.pos - offset)?
+            None => self.get_slice(init_pos, self.pos - offset)?,
         };
 
         let radix = if is_hex { 16 } else { 10 };
         let token = if is_u128 {
-            Token::U128Value(u128::from_str_radix(&v, radix).map_err(|_| LexerError::ParseToNumber(self.line, self.column))?)
+            Token::U128Value(
+                u128::from_str_radix(&v, radix)
+                    .map_err(|_| LexerError::ParseToNumber(self.line, self.column))?,
+            )
         } else {
-            Token::U64Value(u64::from_str_radix(&v, radix).map_err(|_| LexerError::ParseToNumber(self.line, self.column))?)
+            Token::U64Value(
+                u64::from_str_radix(&v, radix)
+                    .map_err(|_| LexerError::ParseToNumber(self.line, self.column))?,
+            )
         };
         Ok(TokenResult {
             token,
             line: self.line,
             column_start,
-            column_end: self.column
+            column_end: self.column,
         })
     }
 
@@ -254,9 +264,8 @@ impl<'a> Lexer<'a> {
     // it also supports optional types
     fn read_token(&mut self, diff: usize) -> Result<TokenResult<'a>, LexerError> {
         let column_start = self.column;
-        let value = self.read_while(|v| -> bool {
-            *v == '_' || v.is_ascii_alphanumeric()
-        }, diff)?;
+        let value =
+            self.read_while(|v| -> bool { *v == '_' || v.is_ascii_alphanumeric() }, diff)?;
 
         if value == "optional" && self.peek()? == '<' {
             self.advance()?;
@@ -273,14 +282,14 @@ impl<'a> Lexer<'a> {
                 token: Token::Optional(Box::new(inner.token)),
                 line: self.line,
                 column_start,
-                column_end: self.column
+                column_end: self.column,
             })
         } else {
             Ok(TokenResult {
                 token: Token::value_of(&value).unwrap_or_else(|| Token::Identifier(value)),
                 line: self.line,
                 column_start,
-                column_end: self.column
+                column_end: self.column,
             })
         }
     }
@@ -289,9 +298,37 @@ impl<'a> Lexer<'a> {
     fn next_token(&mut self) -> Result<Option<TokenResult<'a>>, LexerError> {
         while let Some(c) = self.next_char() {
             let token: TokenResult<'a> = match c {
-                '\n' | '\t' => {
+                '\n' => {
+                    let result = TokenResult {
+                        token: Token::Newline,
+                        line: self.line,
+                        column_start: self.column,
+                        column_end: self.column,
+                    };
                     self.line += 1;
                     self.column = 0;
+
+                    result
+                },
+                // Windows line ending
+                '\r' => {
+                    if self.next_char() == Some('\n') {
+                        let result = TokenResult {
+                            token: Token::Newline,
+                            line: self.line,
+                            column_start: self.column - 1,
+                            column_end: self.column,
+                        };
+                        self.line += 1;
+                        self.column = 0;
+
+                        result
+                    } else {
+                        return Err(LexerError::ExpectedChar(self.line, self.column));
+                    }
+                },
+                '\t' => {
+                    self.column += 1;
                     continue;
                 },
                 // skipped characters
@@ -308,14 +345,15 @@ impl<'a> Lexer<'a> {
                         token: Token::StringValue(value),
                         line: self.line,
                         column_start,
-                        column_end: self.column
+                        column_end: self.column,
                     }
                 },
                 // it's only a comment, skip until its end
                 '/' if {
                     let v = self.peek()?;
                     v == '/' || v == '*'
-                } => {
+                } =>
+                {
                     let v = self.advance()?;
                     if v == '/' {
                         self.skip_until(|c| *c == '\n')?;
@@ -337,9 +375,8 @@ impl<'a> Lexer<'a> {
                     } else {
                         return Err(LexerError::NoTokenFound(self.line, self.column));
                     }
-                }
+                },
             };
-
             return Ok(Some(token));
         }
 
@@ -376,12 +413,15 @@ mod tests {
         let code = "let a = 10;";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Let,
-            Token::Identifier("a"),
-            Token::OperatorAssign,
-            Token::U64Value(10)
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Let,
+                Token::Identifier("a"),
+                Token::OperatorAssign,
+                Token::U64Value(10)
+            ]
+        );
     }
 
     #[test]
@@ -389,16 +429,19 @@ mod tests {
         let code = "func main() { return 10; }";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Function,
-            Token::Identifier("main"),
-            Token::ParenthesisOpen,
-            Token::ParenthesisClose,
-            Token::BraceOpen,
-            Token::Return,
-            Token::U64Value(10),
-            Token::BraceClose
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Function,
+                Token::Identifier("main"),
+                Token::ParenthesisOpen,
+                Token::ParenthesisClose,
+                Token::BraceOpen,
+                Token::Return,
+                Token::U64Value(10),
+                Token::BraceClose
+            ]
+        );
     }
 
     #[test]
@@ -406,9 +449,7 @@ mod tests {
         let code = "10_000L";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::U128Value(10_000)
-        ]);
+        assert_eq!(tokens, vec![Token::U128Value(10_000)]);
     }
 
     #[test]
@@ -416,9 +457,10 @@ mod tests {
         let code = "\"Hello, World!\"";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::StringValue(Cow::Borrowed("Hello, World!"))
-        ]);
+        assert_eq!(
+            tokens,
+            vec![Token::StringValue(Cow::Borrowed("Hello, World!"))]
+        );
     }
 
     #[test]
@@ -426,9 +468,10 @@ mod tests {
         let code = "\"'Hello, World!'\"";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::StringValue(Cow::Borrowed("'Hello, World!'"))
-        ]);
+        assert_eq!(
+            tokens,
+            vec![Token::StringValue(Cow::Borrowed("'Hello, World!'"))]
+        );
     }
 
     #[test]
@@ -436,9 +479,10 @@ mod tests {
         let code = "'Hello, \\'World!'";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::StringValue(Cow::Borrowed("Hello, 'World!"))
-        ]);
+        assert_eq!(
+            tokens,
+            vec![Token::StringValue(Cow::Borrowed("Hello, 'World!"))]
+        );
     }
 
     #[test]
@@ -446,12 +490,15 @@ mod tests {
         let code = "// This is a comment\nlet a = 10;";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Let,
-            Token::Identifier("a"),
-            Token::OperatorAssign,
-            Token::U64Value(10)
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Let,
+                Token::Identifier("a"),
+                Token::OperatorAssign,
+                Token::U64Value(10)
+            ]
+        );
     }
 
     #[test]
@@ -459,12 +506,15 @@ mod tests {
         let code = "/* This is a comment\n * with multiple lines */\nlet a = 10;";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Let,
-            Token::Identifier("a"),
-            Token::OperatorAssign,
-            Token::U64Value(10)
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Let,
+                Token::Identifier("a"),
+                Token::OperatorAssign,
+                Token::U64Value(10)
+            ]
+        );
     }
 
     #[test]
@@ -472,15 +522,18 @@ mod tests {
         let code = "let a = 10; a += 20;";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Let,
-            Token::Identifier("a"),
-            Token::OperatorAssign,
-            Token::U64Value(10),
-            Token::Identifier("a"),
-            Token::OperatorPlusAssign,
-            Token::U64Value(20)
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Let,
+                Token::Identifier("a"),
+                Token::OperatorAssign,
+                Token::U64Value(10),
+                Token::Identifier("a"),
+                Token::OperatorPlusAssign,
+                Token::U64Value(20)
+            ]
+        );
     }
 
     #[test]
@@ -488,9 +541,7 @@ mod tests {
         let code = "10";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::U64Value(10)
-        ]);
+        assert_eq!(tokens, vec![Token::U64Value(10)]);
     }
 
     #[test]
@@ -498,9 +549,7 @@ mod tests {
         let code = "10_000";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::U64Value(10_000)
-        ]);
+        assert_eq!(tokens, vec![Token::U64Value(10_000)]);
     }
 
     #[test]
@@ -508,9 +557,7 @@ mod tests {
         let code = "0x10";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::U64Value(16)
-        ]);
+        assert_eq!(tokens, vec![Token::U64Value(16)]);
     }
 
     #[test]
@@ -518,9 +565,7 @@ mod tests {
         let code = "10L";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::U128Value(10)
-        ]);
+        assert_eq!(tokens, vec![Token::U128Value(10)]);
     }
 
     #[test]
@@ -528,9 +573,7 @@ mod tests {
         let code = "10_000L";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::U128Value(10_000)
-        ]);
+        assert_eq!(tokens, vec![Token::U128Value(10_000)]);
     }
 
     #[test]
@@ -538,9 +581,7 @@ mod tests {
         let code = "0x10L";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::U128Value(16)
-        ]);
+        assert_eq!(tokens, vec![Token::U128Value(16)]);
     }
 
     #[test]
@@ -548,27 +589,30 @@ mod tests {
         let code = "func sum(a: u64, b: u64): u64 { return a + b; }";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Function,
-            Token::Identifier("sum"),
-            Token::ParenthesisOpen,
-            Token::Identifier("a"),
-            Token::Colon,
-            Token::U64,
-            Token::Comma,
-            Token::Identifier("b"),
-            Token::Colon,
-            Token::U64,
-            Token::ParenthesisClose,
-            Token::Colon,
-            Token::U64,
-            Token::BraceOpen,
-            Token::Return,
-            Token::Identifier("a"),
-            Token::OperatorPlus,
-            Token::Identifier("b"),
-            Token::BraceClose
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Function,
+                Token::Identifier("sum"),
+                Token::ParenthesisOpen,
+                Token::Identifier("a"),
+                Token::Colon,
+                Token::U64,
+                Token::Comma,
+                Token::Identifier("b"),
+                Token::Colon,
+                Token::U64,
+                Token::ParenthesisClose,
+                Token::Colon,
+                Token::U64,
+                Token::BraceOpen,
+                Token::Return,
+                Token::Identifier("a"),
+                Token::OperatorPlus,
+                Token::Identifier("b"),
+                Token::BraceClose
+            ]
+        );
     }
 
     #[test]
@@ -576,14 +620,17 @@ mod tests {
         let code = "sum(10, 20)";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Identifier("sum"),
-            Token::ParenthesisOpen,
-            Token::U64Value(10),
-            Token::Comma,
-            Token::U64Value(20),
-            Token::ParenthesisClose
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Identifier("sum"),
+                Token::ParenthesisOpen,
+                Token::U64Value(10),
+                Token::Comma,
+                Token::U64Value(20),
+                Token::ParenthesisClose
+            ]
+        );
     }
 
     #[test]
@@ -591,9 +638,7 @@ mod tests {
         let code = "optional<u64>";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Optional(Box::new(Token::U64))
-        ]);
+        assert_eq!(tokens, vec![Token::Optional(Box::new(Token::U64))]);
     }
 
     #[test]
@@ -601,9 +646,12 @@ mod tests {
         let code = "optional<optional<u64>>";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Optional(Box::new(Token::Optional(Box::new(Token::U64))))
-        ]);
+        assert_eq!(
+            tokens,
+            vec![Token::Optional(Box::new(Token::Optional(Box::new(
+                Token::U64
+            ))))]
+        );
     }
 
     #[test]
@@ -611,21 +659,24 @@ mod tests {
         let code = "if a == 10 { return 10; } else { return 20; }";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::If,
-            Token::Identifier("a"),
-            Token::OperatorEquals,
-            Token::U64Value(10),
-            Token::BraceOpen,
-            Token::Return,
-            Token::U64Value(10),
-            Token::BraceClose,
-            Token::Else,
-            Token::BraceOpen,
-            Token::Return,
-            Token::U64Value(20),
-            Token::BraceClose
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::If,
+                Token::Identifier("a"),
+                Token::OperatorEquals,
+                Token::U64Value(10),
+                Token::BraceOpen,
+                Token::Return,
+                Token::U64Value(10),
+                Token::BraceClose,
+                Token::Else,
+                Token::BraceOpen,
+                Token::Return,
+                Token::U64Value(20),
+                Token::BraceClose
+            ]
+        );
     }
 
     #[test]
@@ -633,19 +684,22 @@ mod tests {
         let code = "struct User { name: string, age: u64 }";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Struct,
-            Token::Identifier("User"),
-            Token::BraceOpen,
-            Token::Identifier("name"),
-            Token::Colon,
-            Token::String,
-            Token::Comma,
-            Token::Identifier("age"),
-            Token::Colon,
-            Token::U64,
-            Token::BraceClose
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Struct,
+                Token::Identifier("User"),
+                Token::BraceOpen,
+                Token::Identifier("name"),
+                Token::Colon,
+                Token::String,
+                Token::Comma,
+                Token::Identifier("age"),
+                Token::Colon,
+                Token::U64,
+                Token::BraceClose
+            ]
+        );
     }
 
     #[test]
@@ -653,14 +707,17 @@ mod tests {
         let code = "let a = 10 as u8;";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::Let,
-            Token::Identifier("a"),
-            Token::OperatorAssign,
-            Token::U64Value(10),
-            Token::As,
-            Token::U8
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::Let,
+                Token::Identifier("a"),
+                Token::OperatorAssign,
+                Token::U64Value(10),
+                Token::As,
+                Token::U8
+            ]
+        );
     }
 
     #[test]
@@ -668,12 +725,15 @@ mod tests {
         let code = "from \"file\" import TestStruct;";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::From,
-            Token::StringValue(Cow::Borrowed("file")),
-            Token::Import,
-            Token::Identifier("TestStruct"),
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::From,
+                Token::StringValue(Cow::Borrowed("file")),
+                Token::Import,
+                Token::Identifier("TestStruct"),
+            ]
+        );
     }
 
     #[test]
@@ -681,14 +741,17 @@ mod tests {
         let code = "from \"file\" import TestStruct as Test;";
         let lexer = Lexer::new(code);
         let tokens = lexer.get().unwrap();
-        assert_eq!(tokens, vec![
-            Token::From,
-            Token::StringValue(Cow::Borrowed("file")),
-            Token::Import,
-            Token::Identifier("TestStruct"),
-            Token::As,
-            Token::Identifier("Test")
-        ]);
+        assert_eq!(
+            tokens,
+            vec![
+                Token::From,
+                Token::StringValue(Cow::Borrowed("file")),
+                Token::Import,
+                Token::Identifier("TestStruct"),
+                Token::As,
+                Token::Identifier("Test")
+            ]
+        );
     }
 
     #[test]

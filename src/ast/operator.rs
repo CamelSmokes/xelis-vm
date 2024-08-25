@@ -2,25 +2,24 @@ use super::Token;
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Operator {
-    Equals, // ==
-    NotEquals, // !=
-    And, // &&
-    Or, // ||
-    GreaterThan, // >
-    LessThan, // <
+    Equals,         // ==
+    NotEquals,      // !=
+    And,            // &&
+    Or,             // ||
+    GreaterThan,    // >
+    LessThan,       // <
     GreaterOrEqual, // >=
-    LessOrEqual, // <=
-    Plus, // +
-    Minus, // -
-    Multiply, // *
-    Divide, // /
-    Rem, // %
-
-    BitwiseXor, // ^
-    BitwiseAnd, // &
-    BitwiseOr, // |
-    BitwiseLeft, // <<
-    BitwiseRight, // >>
+    LessOrEqual,    // <=
+    Plus,           // +
+    Minus,          // -
+    Multiply,       // *
+    Divide,         // /
+    Rem,            // %
+    BitwiseXor,     // ^
+    BitwiseAnd,     // &
+    BitwiseOr,      // |
+    BitwiseLeft,    // <<
+    BitwiseRight,   // >>
 
     Assign(Option<Box<Operator>>),
     // Assign, // =
@@ -80,13 +79,13 @@ impl Operator {
     pub fn is_assignation(&self) -> bool {
         match &self {
             Operator::Assign(_) => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_number_operator(&self) -> bool {
         match &self {
-            | Operator::Minus
+            Operator::Minus
             | Operator::Divide
             | Operator::Multiply
             | Operator::Rem
@@ -99,7 +98,7 @@ impl Operator {
             | Operator::GreaterThan
             | Operator::LessOrEqual
             | Operator::LessThan => true,
-            _ => false
+            _ => false,
         }
     }
 
@@ -113,14 +112,33 @@ impl Operator {
             | Operator::LessThan
             | Operator::GreaterOrEqual
             | Operator::LessOrEqual => true,
-            _ => false
+            _ => false,
         }
     }
 
     pub fn is_and_or_or(&self) -> bool {
         match &self {
             Operator::And | Operator::Or => true,
-            _ => false
+            _ => false,
+        }
+    }
+    pub fn precedence(&self) -> u64 {
+        match self {
+            Operator::Multiply | Operator::Divide | Operator::Rem => 9,
+            Operator::Plus | Operator::Minus => 8,
+            Operator::BitwiseLeft | Operator::BitwiseRight => 7,
+            Operator::BitwiseAnd => 6,
+            Operator::BitwiseXor => 5,
+            Operator::BitwiseOr => 4,
+            Operator::GreaterThan
+            | Operator::LessThan
+            | Operator::GreaterOrEqual
+            | Operator::LessOrEqual
+            | Operator::Equals
+            | Operator::NotEquals => 3,
+            Operator::And => 2,
+            Operator::Or => 1,
+            Operator::Assign(_) => 0,
         }
     }
 }
