@@ -19,9 +19,11 @@ pub struct Compiler<'a> {
     // Final module to return
     module: Module,
     // Index of break jump to patch
-    loop_break_patch: Vec<usize>,
+    loop_break_patch: Vec<Vec<usize>>,
     // Index of continue jump to patch
-    loop_continue_patch: Vec<usize>,
+    loop_continue_patch: Vec<Vec<usize>>,
+    // Used for OpCode::MemorySet
+    next_register_store_id: u16,
 }
 
 impl<'a> Compiler<'a> {
@@ -33,6 +35,7 @@ impl<'a> Compiler<'a> {
             module: Module::new(),
             loop_break_patch: Vec::new(),
             loop_continue_patch: Vec::new(),
+            next_register_store_id: 0
         }
     }
 
@@ -64,6 +67,12 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    fn memstore(&mut self, chunk: &mut Chunk) {
+        chunk.emit_opcode(OpCode::MemorySet);
+        chunk.write_u16(self.next_register_store_id);
+        self.next_register_store_id += 1;
+    }
+
     // Compile the expression
     fn compile_expr(&mut self, chunk: &mut Chunk, expr: &Expression) {
         match expr {
@@ -71,7 +80,7 @@ impl<'a> Compiler<'a> {
                 // Compile the value
                 let index = self.module.add_constant(v.clone());
                 chunk.emit_opcode(OpCode::Constant);
-                chunk.write_u8(index as u8);
+                chunk.write_u16(index as u16);
             },
             Expression::ArrayConstructor(exprs) => {
                 for expr in exprs {
@@ -183,6 +192,25 @@ impl<'a> Compiler<'a> {
         }
     }
 
+    // Start a loop by pushing the break/continue vec to track them
+    fn start_loop(&mut self) {
+        self.loop_break_patch.push(Vec::new());
+        self.loop_continue_patch.push(Vec::new());
+    }
+
+    // End the loop by patching all continue/break
+    fn end_loop(&mut self, chunk: &mut Chunk, start_index: usize, end_index: usize) {
+        // Patch the break
+        for jump in self.loop_break_patch.pop().unwrap() {
+            chunk.patch_jump(jump, end_index as u32);
+        }
+
+        // Patch the continue
+        for jump in self.loop_continue_patch.pop().unwrap() {
+            chunk.patch_jump(jump, start_index as u32);
+        }
+    }
+
     // Compile the statements
     fn compile_statements(&mut self, chunk: &mut Chunk, statements: &[Statement]) {
         // Compile the statements
@@ -197,7 +225,7 @@ impl<'a> Compiler<'a> {
                 },
                 Statement::Variable(declaration) => {
                     self.compile_expr(chunk, &declaration.value);
-                    chunk.emit_opcode(OpCode::MemoryStore);
+                    self.memstore(chunk);
                 },
                 Statement::Scope(statements) => self.compile_statements(chunk, statements),
                 Statement::If(condition, statements, else_statements) => {
@@ -247,6 +275,7 @@ impl<'a> Compiler<'a> {
                     chunk.write_u32(INVALID_ADDR);
                     let jump_addr = chunk.last_index();
 
+                    self.start_loop();
                     // Compile the valid condition
                     self.compile_statements(chunk, statements);
 
@@ -258,54 +287,39 @@ impl<'a> Compiler<'a> {
                     let jump_false_addr = chunk.index();
                     chunk.patch_jump(jump_addr, jump_false_addr as u32);
 
-                    // Patch the break
-                    if let Some(jump) = self.loop_break_patch.pop() {
-                        chunk.patch_jump(jump, jump_false_addr as u32);
-                    }
-
-                    // Patch the continue
-                    if let Some(jump) = self.loop_continue_patch.pop() {
-                        chunk.patch_jump(jump, start_index as u32);
-                    }
+                    self.end_loop(chunk, start_index, jump_false_addr);
                 },
                 Statement::ForEach(_, expr_values, statements) => {
-                    let start_index = chunk.index();
                     // Compile the expression
                     self.compile_expr(chunk, expr_values);
 
-                    // TODO fixme
-
-                    // Emit the jump if false
-                    // We will overwrite the addr later
-                    chunk.emit_opcode(OpCode::JumpIfFalse);
+                    chunk.emit_opcode(OpCode::IterableBegin);
+                    let start_index = chunk.index();
+                    chunk.emit_opcode(OpCode::IterableNext);
                     chunk.write_u32(INVALID_ADDR);
-                    let jump_addr = chunk.last_index();
+                    let jump_end = chunk.last_index();
 
+                    // Store the value
+                    self.memstore(chunk);
+
+                    self.start_loop();
                     // Compile the valid condition
                     self.compile_statements(chunk, statements);
 
                     // Jump back to the start
                     chunk.emit_opcode(OpCode::Jump);
-                    chunk.write_u32(jump_addr as u32);
+                    chunk.write_u32(start_index as u32);
 
-                    // Patch the jump if false
-                    let jump_false_addr = chunk.index();
-                    chunk.patch_jump(jump_addr, jump_false_addr as u32);
+                    // Patch the IterableNext
+                    let end_index = chunk.index();
+                    chunk.patch_jump(jump_end, end_index as u32);
 
-                    // Patch the break
-                    if let Some(jump) = self.loop_break_patch.pop() {
-                        chunk.patch_jump(jump, jump_false_addr as u32);
-                    }
-
-                    // Patch the continue
-                    if let Some(jump) = self.loop_continue_patch.pop() {
-                        chunk.patch_jump(jump, start_index as u32);
-                    }
+                    self.end_loop(chunk, start_index, end_index);
                 }
                 Statement::For(var, expr_condition, expr_op, statements) => {
                     // Compile the variable
                     self.compile_expr(chunk, &var.value);
-                    chunk.emit_opcode(OpCode::MemoryStore);
+                    self.memstore(chunk);
 
                     // Compile the condition
                     let start_index = chunk.index();
@@ -317,6 +331,7 @@ impl<'a> Compiler<'a> {
                     chunk.write_u32(INVALID_ADDR);
                     let jump_addr = chunk.last_index();
 
+                    self.start_loop();
                     // Compile the valid condition
                     self.compile_statements(chunk, statements);
 
@@ -332,25 +347,17 @@ impl<'a> Compiler<'a> {
                     let jump_false_addr = chunk.index();
                     chunk.patch_jump(jump_addr, jump_false_addr as u32);
 
-                    // Patch the break
-                    if let Some(jump) = self.loop_break_patch.pop() {
-                        chunk.patch_jump(jump, jump_false_addr as u32);
-                    }
-
-                    // Patch the continue
-                    if let Some(jump) = self.loop_continue_patch.pop() {
-                        chunk.patch_jump(jump, continue_index as u32);
-                    }
+                    self.end_loop(chunk, continue_index, jump_false_addr);
                 },
                 Statement::Break => {
                     chunk.emit_opcode(OpCode::Jump);
                     chunk.write_u32(INVALID_ADDR);
-                    self.loop_break_patch.push(chunk.last_index());
+                    self.loop_break_patch.last_mut().unwrap().push(chunk.last_index());
                 },
                 Statement::Continue => {
                     chunk.emit_opcode(OpCode::Jump);
                     chunk.write_u32(INVALID_ADDR);
-                    self.loop_continue_patch.push(chunk.last_index());
+                    self.loop_continue_patch.last_mut().unwrap().push(chunk.last_index());
                 }
             }
         }
@@ -358,14 +365,16 @@ impl<'a> Compiler<'a> {
 
     // Compile the function
     fn compile_function(&mut self, function: &FunctionType) {
+        self.next_register_store_id = 0;
         let mut chunk = Chunk::new();
+
         if function.get_instance_name().is_some() {
-            chunk.emit_opcode(OpCode::MemoryStore);
+            self.memstore(&mut chunk);
         }
 
         // Store the parameters
         for _ in function.get_parameters() {
-            chunk.emit_opcode(OpCode::MemoryStore);
+            self.memstore(&mut chunk);
         }
 
         self.compile_statements(&mut chunk, function.get_statements());
@@ -449,7 +458,10 @@ mod tests {
         let chunk = module.get_chunk_at(0).unwrap();
         assert_eq!(
             chunk.get_instructions(),
-            &[OpCode::Constant.as_byte(), 0, OpCode::Return.as_byte()]
+            &[
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::Return.as_byte()
+            ]
         );
     }
 
@@ -476,8 +488,8 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::Add.as_byte(),
                 OpCode::Return.as_byte()
             ]
@@ -494,11 +506,11 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::JumpIfFalse.as_byte(), 0, 0, 0, 10,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::JumpIfFalse.as_byte(), 12, 0, 0, 0,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::Return.as_byte(),
-                OpCode::Constant.as_byte(), 2,
+                OpCode::Constant.as_byte(), 2, 0,
                 OpCode::Return.as_byte()
             ]
         );
@@ -514,11 +526,11 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::JumpIfFalse.as_byte(), 0, 0, 0, 10,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::JumpIfFalse.as_byte(), 12, 0, 0, 0,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::Return.as_byte(),
-                OpCode::Constant.as_byte(), 2,
+                OpCode::Constant.as_byte(), 2, 0,
                 OpCode::Return.as_byte()
             ]
         );
@@ -534,16 +546,16 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::MemoryStore.as_byte(),
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::MemorySet.as_byte(), 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::Lt.as_byte(),
-                OpCode::JumpIfFalse.as_byte(), 0, 0, 0, 25,
+                OpCode::JumpIfFalse.as_byte(), 30, 0, 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
-                OpCode::Constant.as_byte(), 2,
+                OpCode::Constant.as_byte(), 2, 0,
                 OpCode::AssignAdd.as_byte(),
-                OpCode::Jump.as_byte(), 0, 0, 0, 3,
+                OpCode::Jump.as_byte(), 6, 0, 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
                 OpCode::Return.as_byte()
             ]
@@ -560,13 +572,21 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::JumpIfFalse.as_byte(), 0, 0, 0, 10,
-                OpCode::Constant.as_byte(), 1,
+                // 1
+                OpCode::Constant.as_byte(), 0, 0,
+                // 2
+                OpCode::Constant.as_byte(), 1, 0,
+                // 3
+                OpCode::Constant.as_byte(), 2, 0,
+                // [1, 2, 3]
+                OpCode::NewArray.as_byte(), 3, 0, 0, 0,
+                OpCode::IterableBegin.as_byte(),
+                OpCode::IterableNext.as_byte(), 32, 0, 0, 0,
+                OpCode::MemorySet.as_byte(), 0, 0,
+                OpCode::MemoryLoad.as_byte(), 0, 0,
                 OpCode::Return.as_byte(),
-                OpCode::Constant.as_byte(), 2,
-                OpCode::Return.as_byte(),
-                OpCode::Constant.as_byte(), 3,
+                OpCode::Jump.as_byte(), 15, 0, 0, 0,
+                OpCode::Constant.as_byte(), 0, 0,
                 OpCode::Return.as_byte()
             ]
         );
@@ -582,19 +602,19 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::MemoryStore.as_byte(),
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::MemorySet.as_byte(), 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::Lt.as_byte(),
-                OpCode::JumpIfFalse.as_byte(), 0, 0, 0, 29,
+                OpCode::JumpIfFalse.as_byte(), 34, 0, 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
                 OpCode::Return.as_byte(),
                 OpCode::MemoryLoad.as_byte(), 0, 0,
-                OpCode::Constant.as_byte(), 2,
+                OpCode::Constant.as_byte(), 2, 0,
                 OpCode::AssignAdd.as_byte(),
-                OpCode::Jump.as_byte(), 0, 0, 0, 3,
-                OpCode::Constant.as_byte(), 2,
+                OpCode::Jump.as_byte(), 6, 0, 0, 0,
+                OpCode::Constant.as_byte(), 2, 0,
                 OpCode::Return.as_byte()
             ]
         );
@@ -610,10 +630,10 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::NewStruct.as_byte(), 0, 0,
-                OpCode::MemoryStore.as_byte(),
+                OpCode::MemorySet.as_byte(), 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
                 OpCode::SubLoad.as_byte(), 0, 0,
                 OpCode::Return.as_byte()
@@ -631,7 +651,7 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
+                OpCode::Constant.as_byte(), 0, 0,
                 OpCode::Return.as_byte()
             ]
         );
@@ -656,13 +676,13 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::JumpIfFalse.as_byte(), 0, 0, 0, 17,
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::JumpIfFalse.as_byte(), 18, 0, 0, 0,
                 // Jump by the break
-                OpCode::Jump.as_byte(), 0, 0, 0, 17,
+                OpCode::Jump.as_byte(), 18, 0, 0, 0,
                 // Jump by the while to go back
                 OpCode::Jump.as_byte(), 0, 0, 0, 0,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::Return.as_byte()
             ]
         );
@@ -678,20 +698,20 @@ mod tests {
         assert_eq!(
             chunk.get_instructions(),
             &[
-                OpCode::Constant.as_byte(), 0,
-                OpCode::MemoryStore.as_byte(),
+                OpCode::Constant.as_byte(), 0, 0,
+                OpCode::MemorySet.as_byte(), 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
-                OpCode::Constant.as_byte(), 1,
+                OpCode::Constant.as_byte(), 1, 0,
                 OpCode::Lt.as_byte(),
-                OpCode::JumpIfFalse.as_byte(), 0, 0, 0, 30,
+                OpCode::JumpIfFalse.as_byte(), 35, 0, 0, 0,
                 // Jump by the continue
                 // It must jump to the increment instruction
-                OpCode::Jump.as_byte(), 0, 0, 0, 19,
+                OpCode::Jump.as_byte(), 23, 0, 0, 0,
                 OpCode::MemoryLoad.as_byte(), 0, 0,
-                OpCode::Constant.as_byte(), 2,
+                OpCode::Constant.as_byte(), 2, 0,
                 OpCode::AssignAdd.as_byte(),
-                OpCode::Jump.as_byte(), 0, 0, 0, 3,
-                OpCode::Constant.as_byte(), 0,
+                OpCode::Jump.as_byte(), 6, 0, 0, 0,
+                OpCode::Constant.as_byte(), 0, 0,
                 OpCode::Return.as_byte()
             ]
         );

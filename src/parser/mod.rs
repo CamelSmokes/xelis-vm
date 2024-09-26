@@ -1,10 +1,10 @@
-mod scope;
 mod context;
 mod error;
-mod struct_manager;
 mod mapper;
 mod program;
+mod scope;
 mod shunting_yard;
+mod struct_manager;
 
 use shunting_yard::{ShuntingYard, YardOp};
 pub(crate) use struct_manager::{StructBuilder, StructManager};
@@ -20,24 +20,12 @@ use crate::{
     ast::*,
     types::{HasKey, Type},
     values::Value,
-    EnvironmentBuilder,
-    IdentifierType,
-    Function,
+    EnvironmentBuilder, Function, IdentifierType,
 };
 use std::{
     borrow::Cow,
     collections::{HashSet, VecDeque},
-    convert::TryInto
 };
-
-macro_rules! convert {
-    ($a: expr) => {{
-        match $a.try_into() {
-            Ok(v) => v,
-            Err(_) => return Err(ParserError::InvalidNumberValueForType)
-        }
-    }};
-}
 
 pub struct Parser<'a> {
     // Tokens to process
@@ -68,7 +56,7 @@ impl<'a> Parser<'a> {
             functions: Vec::new(),
             functions_mapper,
             struct_manager: StructManager::with_parent(environment.get_struct_manager()),
-            environment
+            environment,
         }
     }
 
@@ -95,7 +83,7 @@ impl<'a> Parser<'a> {
     fn next_identifier(&mut self) -> Result<&'a str, ParserError<'a>> {
         match self.advance()? {
             Token::Identifier(id) => Ok(id),
-            token => Err(ParserError::ExpectedIdentifierToken(token))
+            token => Err(ParserError::ExpectedIdentifierToken(token)),
         }
     }
 
@@ -114,17 +102,20 @@ impl<'a> Parser<'a> {
     // Check if the next token is an identifier
     #[inline(always)]
     fn peek_is_identifier(&self) -> bool {
-        self.peek().ok().filter(|t| match t {
-            Token::Identifier(_) => true,
-            _ => false
-        }).is_some()
+        self.peek()
+            .ok()
+            .filter(|t| match t {
+                Token::Identifier(_) => true,
+                _ => false,
+            })
+            .is_some()
     }
 
     // Require a specific token
     fn expect_token(&mut self, expected: Token<'a>) -> Result<(), ParserError<'a>> {
         let token = self.advance()?;
         if token != expected {
-            return Err(ParserError::InvalidToken(token, expected)) 
+            return Err(ParserError::InvalidToken(token, expected));
         }
         Ok(())
     }
@@ -145,7 +136,7 @@ impl<'a> Parser<'a> {
         let token = self.advance()?;
         let mut _type = match Type::from_token(&token, &self.struct_manager) {
             Some(v) => v,
-            None => return Err(ParserError::TypeNotFound(token))
+            None => return Err(ParserError::TypeNotFound(token)),
         };
 
         // support multi dimensional arrays
@@ -167,20 +158,33 @@ impl<'a> Parser<'a> {
     }
 
     // get the type of an expression
-    fn get_type_from_expression<'b>(&'b self, on_type: Option<&Type>, expression: &'b Expression, context: &'b Context) -> Result<Cow<'b, Type>, ParserError<'a>> {
+    fn get_type_from_expression<'b>(
+        &'b self,
+        on_type: Option<&Type>,
+        expression: &'b Expression,
+        context: &'b Context,
+    ) -> Result<Cow<'b, Type>, ParserError<'a>> {
         match self.get_type_from_expression_internal(on_type, expression, context)? {
             Some(v) => Ok(v),
-            None => Err(ParserError::EmptyValue)
+            None => Err(ParserError::EmptyValue),
         }
     }
 
     // this function don't verify, but only returns the type of an expression
     // all tests should be done when constructing an expression, not here
-    fn get_type_from_expression_internal<'b>(&'b self, on_type: Option<&Type>, expression: &'b Expression, context: &'b Context) -> Result<Option<Cow<'b, Type>>, ParserError<'a>> {
+    fn get_type_from_expression_internal<'b>(
+        &'b self,
+        on_type: Option<&Type>,
+        expression: &'b Expression,
+        context: &'b Context,
+    ) -> Result<Option<Cow<'b, Type>>, ParserError<'a>> {
         let _type: Cow<'b, Type> = match expression {
             Expression::ArrayConstructor(ref values) => match values.first() {
-                Some(v) => Cow::Owned(Type::Array(Box::new(self.get_type_from_expression(on_type, v, context)?.into_owned()))),
-                None => return Err(ParserError::EmptyArrayConstructor) // cannot determine type from empty array
+                Some(v) => Cow::Owned(Type::Array(Box::new(
+                    self.get_type_from_expression(on_type, v, context)?
+                        .into_owned(),
+                ))),
+                None => return Err(ParserError::EmptyArrayConstructor), // cannot determine type from empty array
             },
             Expression::Variable(ref var_name) => match on_type {
                 Some(t) => {
@@ -190,17 +194,17 @@ impl<'a> Parser<'a> {
                         if let Some(value) = structure.fields.get(index) {
                             Cow::Borrowed(value)
                         } else {
-                            return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()))
+                            return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()));
                         }
                     } else {
-                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()))
+                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()));
                     }
-                },
+                }
                 None => {
                     if context.has_variable(var_name) {
                         Cow::Borrowed(context.get_type_of_variable(var_name)?)
                     } else {
-                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()))
+                        return Err(ParserError::UnexpectedMappedVariableId(var_name.clone()));
                     }
                 }
             },
@@ -211,39 +215,52 @@ impl<'a> Parser<'a> {
                         Type::T => match on_type {
                             Some(t) => Cow::Owned(t.get_inner_type().clone()),
                             None => match path {
-                                Some(p) => Cow::Owned(self.get_type_from_expression(on_type, p, context)?.get_inner_type().clone()),
-                                None => return Err(ParserError::InvalidTypeT)
-                            }
+                                Some(p) => Cow::Owned(
+                                    self.get_type_from_expression(on_type, p, context)?
+                                        .get_inner_type()
+                                        .clone(),
+                                ),
+                                None => return Err(ParserError::InvalidTypeT),
+                            },
                         },
                         Type::Optional(inner) => match inner.as_ref() {
                             Type::T => match on_type {
-                                Some(t) => Cow::Owned(Type::Optional(Box::new(t.get_inner_type().clone()))),
-                                None => match path {
-                                    Some(p) => Cow::Owned(Type::Optional(Box::new(self.get_type_from_expression(on_type, p, context)?.get_inner_type().clone()))),
-                                    None => return Err(ParserError::InvalidTypeT)
+                                Some(t) => {
+                                    Cow::Owned(Type::Optional(Box::new(t.get_inner_type().clone())))
                                 }
+                                None => match path {
+                                    Some(p) => Cow::Owned(Type::Optional(Box::new(
+                                        self.get_type_from_expression(on_type, p, context)?
+                                            .get_inner_type()
+                                            .clone(),
+                                    ))),
+                                    None => return Err(ParserError::InvalidTypeT),
+                                },
                             },
-                            _ => Cow::Borrowed(v)
+                            _ => Cow::Borrowed(v),
                         },
-                        _ => Cow::Borrowed(v)
+                        _ => Cow::Borrowed(v),
                     },
-                    None => return Err(ParserError::FunctionNoReturnType)
+                    None => return Err(ParserError::FunctionNoReturnType),
                 }
-            },
+            }
             // we have to clone everything due to this
             Expression::Value(ref val) => match Type::from_value(val, &self.struct_manager) {
                 Some(v) => Cow::Owned(v),
-                None => return Ok(None)
+                None => return Ok(None),
             },
             Expression::ArrayCall(path, _) => {
-                match self.get_type_from_expression(on_type, path, context)?.into_owned() {
+                match self
+                    .get_type_from_expression(on_type, path, context)?
+                    .into_owned()
+                {
                     Type::Array(_type) => Cow::Owned(*_type),
-                    _ => return Err(ParserError::InvalidArrayCall)
+                    _ => return Err(ParserError::InvalidArrayCall),
                 }
-            },
+            }
             Expression::StructConstructor(name, _) => {
                 if !self.struct_manager.has(name) {
-                    return Err(ParserError::StructNotFound(name.clone()))
+                    return Err(ParserError::StructNotFound(name.clone()));
                 }
 
                 Cow::Owned(Type::Struct(name.clone()))
@@ -251,7 +268,7 @@ impl<'a> Parser<'a> {
             Expression::Path(left, right) => {
                 let var_type = self.get_type_from_expression(on_type, left, context)?;
                 self.get_type_from_expression(Some(&var_type), right, context)?
-            },
+            }
             // Compatibility checks are done when constructing the expression
             Expression::Operator(op, left, right) => match op {
                 // Condition operators
@@ -275,7 +292,7 @@ impl<'a> Parser<'a> {
                     } else {
                         left_type
                     }
-                },
+                }
                 // Number only operators
                 Operator::Multiply
                 | Operator::Divide
@@ -288,15 +305,21 @@ impl<'a> Parser<'a> {
                     let left_type = self.get_type_from_expression(on_type, left, context)?;
                     let right_type = self.get_type_from_expression(on_type, right, context)?;
 
-                    if !left_type.is_number() || !right_type.is_number() || left_type != right_type {
-                        return Err(ParserError::InvalidOperationNotSameType(left_type.into_owned(), right_type.into_owned()))
+                    if !left_type.is_number() || !right_type.is_number() || left_type != right_type
+                    {
+                        return Err(ParserError::InvalidOperationNotSameType(
+                            left_type.into_owned(),
+                            right_type.into_owned(),
+                        ));
                     }
                     left_type
                 }
             },
             Expression::IsNot(_) => Cow::Owned(Type::Bool),
-            Expression::Ternary(_, expr, _) => self.get_type_from_expression(on_type, expr, context)?,
-            Expression::Cast(_, _type) => Cow::Borrowed(_type)
+            Expression::Ternary(_, expr, _) => {
+                self.get_type_from_expression(on_type, expr, context)?
+            }
+            Expression::Cast(_, _type) => Cow::Borrowed(_type),
         };
 
         Ok(Some(_type))
@@ -304,7 +327,14 @@ impl<'a> Parser<'a> {
 
     // Read a function call with the following syntax:
     // function_name(param1, param2, ...)
-    fn read_function_call(&mut self, path: Option<Expression>, on_type: Option<&Type>, name: &str, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
+    fn read_function_call(
+        &mut self,
+        path: Option<Expression>,
+        on_type: Option<&Type>,
+        name: &str,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
         // we remove the token from the list
         self.expect_token(Token::ParenthesisOpen)?;
         let mut parameters: Vec<Expression> = Vec::new();
@@ -315,7 +345,10 @@ impl<'a> Parser<'a> {
             let expr = self.read_expression(context, mapper)?;
             // We are forced to clone the type because we can't borrow it from the expression
             // I prefer to do this than doing an iteration below
-            types.push(self.get_type_from_expression(None, &expr, context)?.into_owned());
+            types.push(
+                self.get_type_from_expression(None, &expr, context)?
+                    .into_owned(),
+            );
             parameters.push(expr);
 
             if self.peek_is(Token::Comma) {
@@ -323,12 +356,16 @@ impl<'a> Parser<'a> {
             }
         }
 
-        let id = self.functions_mapper.get_compatible(Signature::new(name.to_owned(), on_type.cloned(), types))?;
+        let id = self.functions_mapper.get_compatible(Signature::new(
+            name.to_owned(),
+            on_type.cloned(),
+            types,
+        ))?;
 
         // Entry are only callable by external
         let f = self.get_function(id)?;
         if f.is_entry() {
-            return Err(ParserError::FunctionNotFound)
+            return Err(ParserError::FunctionNotFound);
         }
 
         self.expect_token(Token::ParenthesisClose)?;
@@ -339,7 +376,12 @@ impl<'a> Parser<'a> {
     // struct_name { field_name: value1, field2: value2 }
     // If we have a field that has the same name as a variable we can pass it as following:
     // Example: struct_name { field_name, field2: value2 }
-    fn read_struct_constructor(&mut self, struct_name: IdentifierType, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
+    fn read_struct_constructor(
+        &mut self,
+        struct_name: IdentifierType,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
         self.expect_token(Token::BraceOpen)?;
         let structure = self.struct_manager.get(&struct_name)?.clone();
         let mut fields = Vec::with_capacity(structure.fields.len());
@@ -350,7 +392,7 @@ impl<'a> Parser<'a> {
                     if let Ok(id) = mapper.get(field_name) {
                         Expression::Variable(id)
                     } else {
-                        return Err(ParserError::UnexpectedVariable(field_name.to_owned())) 
+                        return Err(ParserError::UnexpectedVariable(field_name.to_owned()));
                     }
                 }
                 Token::Colon => {
@@ -360,12 +402,15 @@ impl<'a> Parser<'a> {
                     }
                     value
                 }
-                token => return Err(ParserError::UnexpectedToken(token))
+                token => return Err(ParserError::UnexpectedToken(token)),
             };
 
             let field_type = self.get_type_from_expression(None, &field_value, context)?;
             if !t.is_compatible_with(&field_type) {
-                return Err(ParserError::InvalidValueType(field_type.into_owned(), t.clone()))
+                return Err(ParserError::InvalidValueType(
+                    field_type.into_owned(),
+                    t.clone(),
+                ));
             }
 
             fields.push(field_value);
@@ -385,11 +430,8 @@ impl<'a> Parser<'a> {
         let mut expressions: Vec<Expression> = Vec::new();
         let mut array_type: Option<Type> = None;
         while *self.peek()? != Token::BracketClose {
-            let expr = self.read_expr(
-                expected_type.map(|t| t.get_inner_type()),
-                context,
-                mapper,
-            )?;
+            let expr =
+                self.read_expr(expected_type.map(|t| t.get_inner_type()), context, mapper)?;
             match &array_type {
                 // array values must have the same type
                 Some(t) => {
@@ -420,7 +462,8 @@ impl<'a> Parser<'a> {
         Ok(Expression::ArrayConstructor(expressions))
     }
 
-    fn read_array_index(       &mut self,
+    fn read_array_index(
+        &mut self,
         on_type: Option<&Type>,
         context: &mut Context,
         mapper: &mut IdMapper,
@@ -429,7 +472,9 @@ impl<'a> Parser<'a> {
         // Index must be of type u64
         let index_type = self.get_type_from_expression(on_type, &index, context)?;
         if *index_type != Type::U64 {
-            return Err(ParserError::InvalidArrayCallIndexType(index_type.into_owned()))
+            return Err(ParserError::InvalidArrayCallIndexType(
+                index_type.into_owned(),
+            ));
         }
         // TODO validate index is u64
         self.expect_token(Token::BracketClose)?;
@@ -437,22 +482,30 @@ impl<'a> Parser<'a> {
     }
 
     // Read an expression with default parameters
-    fn read_expression(&mut self, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
+    fn read_expression(
+        &mut self,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
         self.read_expr(None, context, mapper)
     }
 
     // Read an expression with the possibility to accept operators
     // number_type is used to force the type of a number
-    fn read_expr(&mut self,expected_type: Option<&Type>, context: &mut Context, mapper: &mut IdMapper) -> Result<Expression, ParserError<'a>> {
+    fn read_expr(
+        &mut self,
+        expected_type: Option<&Type>,
+        context: &mut Context,
+        mapper: &mut IdMapper,
+    ) -> Result<Expression, ParserError<'a>> {
         println!("START");
         if self.peek_is(Token::ParenthesisClose) {
             return Err(ParserError::UnmatchedParenthesis);
         }
         let mut yard = ShuntingYard::new();
         while let Ok(token) = self.peek() {
-
             match token {
-                 Token::BraceClose | Token::BracketClose | Token::BraceOpen => break,
+                Token::BraceClose | Token::BracketClose | Token::BraceOpen => break,
                 Token::ParenthesisClose if yard.get_paren_depth() == 0 => break,
                 _ => (),
             }
@@ -475,36 +528,48 @@ impl<'a> Parser<'a> {
                 }
             }
             let token = self.advance()?;
-            println!("{:?}",token);
+            println!("{:?}", token);
             match token {
                 Token::BracketOpen => {
                     if yard.expecting_op() {
                         // Array index
                         let array_index = self.read_array_index(None, context, mapper)?;
                         let array = yard.pop_expression()?;
-                        if !self.get_type_from_expression(None, &array, context)?.is_array() {
-                            return Err(ParserError::InvalidArrayCall)
+                        if !self
+                            .get_type_from_expression(None, &array, context)?
+                            .is_array()
+                        {
+                            return Err(ParserError::InvalidArrayCall);
                         }
                         // Although it acts like an operator, the `[` token is not internally an operator.
-                        // Manually toggle expecting op so that the following insert is valid. 
+                        // Manually toggle expecting op so that the following insert is valid.
                         yard.toggle_expect();
-                        yard.insert_expr(Expression::ArrayCall(Box::new(array), Box::new(array_index)));                        
+                        yard.insert_expr(Expression::ArrayCall(
+                            Box::new(array),
+                            Box::new(array_index),
+                        ));
                     } else {
                         // Array constructor
-                        let array_expr = self.read_array_constructor( None, context, mapper)?;
+                        let array_expr = self.read_array_constructor(None, context, mapper)?;
                         yard.insert_expr(array_expr);
                     };
-                },
+                }
                 Token::ParenthesisOpen => {
                     yard.open_paren();
-                },
+                }
                 Token::ParenthesisClose => {
                     yard.close_paren(self, context)?;
                 }
                 Token::Identifier(id) => {
                     if self.peek_is(Token::ParenthesisOpen) {
                         // function call
-                        yard.insert_expr(self.read_function_call(yard.peek_expression().cloned(), None, id, context, mapper)?);
+                        yard.insert_expr(self.read_function_call(
+                            yard.peek_expression().cloned(),
+                            None,
+                            id,
+                            context,
+                            mapper,
+                        )?);
                     } else {
                         // variable
                         if let Ok(id) = mapper.get(id) {
@@ -512,36 +577,18 @@ impl<'a> Parser<'a> {
                         } else if let Ok(id) = self.struct_manager.get_mapping(id) {
                             yard.insert_expr(self.read_struct_constructor(id, context, mapper)?);
                         } else {
-                            return Err(ParserError::UnexpectedVariable(id.to_owned()))
+                            return Err(ParserError::UnexpectedVariable(id.to_owned()));
                         }
                     }
-                },
-                Token::U64Value(value) => {
-                    yard.insert_expr(Expression::Value(
-                        match expected_type {
-                        Some(t) => match t {
-                            Type::U8 => Value::U8(convert!(value)),
-                            Type::U16 => Value::U16(convert!(value)),
-                            Type::U32 => Value::U32(convert!(value)),
-                            Type::U64 => Value::U64(value),
-                            Type::U128 => Value::U128(convert!(value)),
-                            Type::Optional(inner) => Value::Optional(Some(Box::new(match inner.as_ref() {
-                                Type::U8 => Value::U8(convert!(value)),
-                                Type::U16 => Value::U16(convert!(value)),
-                                Type::U32 => Value::U32(convert!(value)),
-                                Type::U64 => Value::U64(value),
-                                Type::U128 => Value::U128(convert!(value)),
-                                Type::String => Value::String(value.to_string()),
-                                _ => return Err(ParserError::ExpectedNumberType)
-                            }))),
-                            Type::String => Value::String(value.to_string()),
-                            _ => return Err(ParserError::ExpectedNumberType)
-                        },
-                        None => Value::U64(value)
-                    }));
-                },
+                }
+                Token::U64Value(value) => yard.insert_expr(Expression::Value(match expected_type {
+                    Some(t) => Value::U64(value).checked_cast_to_primitive_type(t)?,
+                    None => Value::U64(value)
+                })),
                 Token::U128Value(value) => yard.insert_expr(Expression::Value(Value::U128(value))),
-                Token::StringValue(value) => yard.insert_expr(Expression::Value(Value::String(value.into_owned()))),
+                Token::StringValue(value) => {
+                    yard.insert_expr(Expression::Value(Value::String(value.into_owned())))
+                }
                 Token::True => yard.insert_expr(Expression::Value(Value::Boolean(true))),
                 Token::False => yard.insert_expr(Expression::Value(Value::Boolean(false))),
                 Token::Null => yard.insert_expr(Expression::Value(Value::Null)),
@@ -549,58 +596,78 @@ impl<'a> Parser<'a> {
                     if !yard.expecting_op() {
                         return Err(ParserError::UnexpectedToken(token));
                     }
-                    let Ok(value) = yard.pop_expression() else  {
+                    let Ok(value) = yard.pop_expression() else {
                         return Err(ParserError::UnexpectedToken(Token::Dot));
                     };
-                    let _type = self.get_type_from_expression(None, &value, context)?.into_owned();
+                    let _type = self
+                        .get_type_from_expression(None, &value, context)?
+                        .into_owned();
                     let ident = self.next_identifier()?;
                     if self.peek_is(Token::ParenthesisOpen) {
                         // Method call
                         yard.toggle_expect();
-                        let call_expr = self.read_function_call(Some(value), Some(&_type), ident, context, mapper)?;
+                        let call_expr = self.read_function_call(
+                            Some(value),
+                            Some(&_type),
+                            ident,
+                            context,
+                            mapper,
+                        )?;
                         yard.insert_expr(call_expr);
                     } else {
                         // Struct member path
                         let Type::Struct(struct_name) = _type else {
-                            return Err(ParserError::UnexpectedType(_type.clone()))
+                            return Err(ParserError::UnexpectedType(_type.clone()));
                         };
                         let builder = self.struct_manager.get(&struct_name)?;
                         yard.toggle_expect();
                         match builder.mapper.get(ident).ok() {
-                            Some(v) => yard.insert_expr(Expression::Path(Box::new(value), Box::new(Expression::Variable(v)))),
-                            None => return Err(ParserError::UnexpectedVariable(ident.to_owned()))
+                            Some(v) => yard.insert_expr(Expression::Path(
+                                Box::new(value),
+                                Box::new(Expression::Variable(v)),
+                            )),
+                            None => return Err(ParserError::UnexpectedVariable(ident.to_owned())),
                         }
                     }
                 }
-                Token::IsNot => yard.insert_op(YardOp::LogicalNot, &token,self, context)?,
+                Token::IsNot => yard.insert_op(YardOp::LogicalNot, &token, self, context)?,
                 Token::OperatorTernary => {
                     let valid_expr = self.read_expr(expected_type, context, mapper)?;
-                    let first_type = self.get_type_from_expression(None, &valid_expr, context)?.into_owned();
+                    let first_type = self
+                        .get_type_from_expression(None, &valid_expr, context)?
+                        .into_owned();
                     self.expect_token(Token::Colon)?;
                     let else_expr = self.read_expr(expected_type, context, mapper)?;
                     let else_type = self.get_type_from_expression(None, &else_expr, context)?;
-                    
-                    if first_type != *else_type { // both expr should have the SAME type.
-                        return Err(ParserError::InvalidValueType(else_type.into_owned(), first_type))
+
+                    if first_type != *else_type {
+                        // both expr should have the SAME type.
+                        return Err(ParserError::InvalidValueType(
+                            else_type.into_owned(),
+                            first_type,
+                        ));
                     }
-                    yard.insert_op(YardOp::Ternary(valid_expr, else_expr), &token, self, context)?;
-                },
+                    yard.insert_op(
+                        YardOp::Ternary(valid_expr, else_expr),
+                        &token,
+                        self,
+                        context,
+                    )?;
+                }
                 Token::As => {
                     yard.insert_op(YardOp::Cast(self.read_type()?), &token, self, context)?;
-                },
+                }
                 token => {
                     let op = match Operator::value_of(&token) {
                         Some(op) => op,
                         // Unknown token at end of expression (let, return, etc.): stop parsing expression.
                         None => break,
                     };
-                    yard.insert_op(YardOp::Standard(op), &token,self, context)?;
+                    yard.insert_op(YardOp::Standard(op), &token, self, context)?;
                 }
             };
         }
-        let res =        yard.finish(self, context);
-        println!("FINISH :{:?}",res);
-        res
+        yard.finish(self, context)
     }
 
     /**
@@ -608,7 +675,12 @@ impl<'a> Parser<'a> {
      *     ...
      * }
      */
-    fn read_body(&mut self, context: &mut Context, return_type: &Option<Type>, mapper: &mut IdMapper<'a>) -> Result<Vec<Statement>, ParserError<'a>> {
+    fn read_body(
+        &mut self,
+        context: &mut Context,
+        return_type: &Option<Type>,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Statement>, ParserError<'a>> {
         context.begin_scope();
         let statements = self.read_statements(context, return_type, mapper)?;
         context.end_scope();
@@ -623,23 +695,30 @@ impl<'a> Parser<'a> {
      * - Must provide a value type
      * - If no value is set, Null is set by default
      */
-    fn read_variable(&mut self, context: &mut Context, mapper: &mut IdMapper<'a>, is_const: bool) -> Result<DeclarationStatement, ParserError<'a>> {
+    fn read_variable(
+        &mut self,
+        context: &mut Context,
+        mapper: &mut IdMapper<'a>,
+        is_const: bool,
+    ) -> Result<DeclarationStatement, ParserError<'a>> {
         let name: &'a str = self.next_identifier()?;
 
         // Variable name must be unique
         // Shadowing is not allowed atm
         if mapper.has_variable(name) {
-            return Err(ParserError::VariableNameAlreadyUsed(name.to_owned()))
+            return Err(ParserError::VariableNameAlreadyUsed(name.to_owned()));
         }
 
         // Constants must be uppercase
         if is_const && name.to_uppercase() != name {
-            return Err(ParserError::ConstantNameNotUppercase(name.to_owned()))
+            return Err(ParserError::ConstantNameNotUppercase(name.to_owned()));
         }
 
         // Variable name must start with a alphabetic character
         if !name.starts_with(char::is_alphabetic) {
-            return Err(ParserError::VariableMustStartWithAlphabetic(name.to_owned()))
+            return Err(ParserError::VariableMustStartWithAlphabetic(
+                name.to_owned(),
+            ));
         }
 
         self.expect_token(Token::Colon)?;
@@ -651,20 +730,28 @@ impl<'a> Parser<'a> {
             let expr_type = match self.get_type_from_expression_internal(None, &expr, context) {
                 Ok(opt_type) => match opt_type {
                     Some(v) => v,
-                    None => if value_type.is_optional() {
-                        Cow::Owned(value_type.clone())
-                    } else {
-                        return Err(ParserError::NoValueType)
+                    None => {
+                        if value_type.is_optional() {
+                            Cow::Owned(value_type.clone())
+                        } else {
+                            return Err(ParserError::NoValueType);
+                        }
                     }
                 },
-                Err(e) => match e { // support empty array declaration
-                    ParserError::EmptyArrayConstructor if value_type.is_array() => Cow::Owned(value_type.clone()),
-                    _ => return Err(e)
-                }
+                Err(e) => match e {
+                    // support empty array declaration
+                    ParserError::EmptyArrayConstructor if value_type.is_array() => {
+                        Cow::Owned(value_type.clone())
+                    }
+                    _ => return Err(e),
+                },
             };
 
             if !expr_type.is_compatible_with(&value_type) {
-                return Err(ParserError::InvalidValueType(expr_type.into_owned(), value_type))
+                return Err(ParserError::InvalidValueType(
+                    expr_type.into_owned(),
+                    value_type,
+                ));
             }
 
             expr
@@ -678,11 +765,16 @@ impl<'a> Parser<'a> {
         Ok(DeclarationStatement {
             id,
             value_type,
-            value
+            value,
         })
     }
 
-    fn read_loop_body(&mut self, context: &mut Context, return_type: &Option<Type>, mapper: &mut IdMapper<'a>) -> Result<Vec<Statement>, ParserError<'a>> {
+    fn read_loop_body(
+        &mut self,
+        context: &mut Context,
+        return_type: &Option<Type>,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Statement>, ParserError<'a>> {
         let old_value = context.is_in_a_loop(); // support loop in loop
         context.set_in_a_loop(true);
         self.expect_token(Token::BraceOpen)?;
@@ -692,27 +784,35 @@ impl<'a> Parser<'a> {
         Ok(statements)
     }
 
-    // Read all statements in a block
-    // return type is used to verify that the last statement is a return with a valid value type
-    // consume_brace is used to know if we should consume the open brace
-    fn read_statements(&mut self, context: &mut Context, return_type: &Option<Type>, mapper: &mut IdMapper<'a>) -> Result<Vec<Statement>, ParserError<'a>> {
-        let mut statements: Vec<Statement> = Vec::new();
-        while let Some(token) = self.next() {
+    // Read a single statement
+    fn read_statement(
+        &mut self,
+        context: &mut Context,
+        return_type: &Option<Type>,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Option<Statement>, ParserError<'a>> {
+        if let Some(token) = self.next() {
             let statement: Statement = match token {
-                Token::BraceClose => break,
-                Token::For => { // Example: for i: u64 = 0; i < 10; i += 1 {}
+                Token::BraceClose => return Ok(None),
+                Token::For => {
+                    // Example: for i: u64 = 0; i < 10; i += 1 {}
                     context.begin_scope();
                     let var = self.read_variable(context, mapper, false)?;
                     let condition = self.read_expression(context, mapper)?;
-                    let condition_type = self.get_type_from_expression(None, &condition, context)?;
-                    if  *condition_type != Type::Bool {
-                        return Err(ParserError::InvalidCondition(condition_type.into_owned(), condition))
+                    let condition_type =
+                        self.get_type_from_expression(None, &condition, context)?;
+                    if *condition_type != Type::Bool {
+                        return Err(ParserError::InvalidCondition(
+                            condition_type.into_owned(),
+                            condition,
+                        ));
                     }
 
                     let increment = self.read_expression(context, mapper)?;
-                    match &increment { // allow only assignations on this expr
-                        Expression::Operator(op, _, _) if op.is_assignation() => {},
-                        _ => return Err(ParserError::InvalidForExpression(increment))
+                    match &increment {
+                        // allow only assignations on this expr
+                        Expression::Operator(op, _, _) if op.is_assignation() => {}
+                        _ => return Err(ParserError::InvalidForExpression(increment)),
                     };
 
                     let statements = self.read_loop_body(context, return_type, mapper)?;
@@ -720,7 +820,8 @@ impl<'a> Parser<'a> {
 
                     Statement::For(var, condition, increment, statements)
                 }
-                Token::ForEach => { // Example: foreach a in array {}
+                Token::ForEach => {
+                    // Example: foreach a in array {}
                     context.begin_scope();
                     let variable = self.next_identifier()?;
                     self.expect_token(Token::In)?;
@@ -729,7 +830,7 @@ impl<'a> Parser<'a> {
 
                     // verify that we can iter on it
                     if !expr_type.is_array() {
-                        return Err(ParserError::ExpectedArrayType)
+                        return Err(ParserError::ExpectedArrayType);
                     }
 
                     let id = mapper.register(Cow::Borrowed(variable))?;
@@ -738,23 +839,32 @@ impl<'a> Parser<'a> {
                     context.end_scope();
 
                     Statement::ForEach(id, expr, statements)
-                },
-                Token::While => { // Example: while i < 10 {}
+                }
+                Token::While => {
+                    // Example: while i < 10 {}
                     let condition = self.read_expression(context, mapper)?;
-                    let condition_type = self.get_type_from_expression(None, &condition, context)?;
-                    if  *condition_type != Type::Bool {
-                        return Err(ParserError::InvalidCondition(condition_type.into_owned(), condition))
+                    let condition_type =
+                        self.get_type_from_expression(None, &condition, context)?;
+                    if *condition_type != Type::Bool {
+                        return Err(ParserError::InvalidCondition(
+                            condition_type.into_owned(),
+                            condition,
+                        ));
                     }
 
                     let statements = self.read_loop_body(context, return_type, mapper)?;
 
                     Statement::While(condition, statements)
-                },
+                }
                 Token::If => {
                     let condition = self.read_expression(context, mapper)?;
-                    let condition_type = self.get_type_from_expression(None, &condition, context)?;
-                    if  *condition_type != Type::Bool {
-                        return Err(ParserError::InvalidCondition(condition_type.into_owned(), condition))
+                    let condition_type =
+                        self.get_type_from_expression(None, &condition, context)?;
+                    if *condition_type != Type::Bool {
+                        return Err(ParserError::InvalidCondition(
+                            condition_type.into_owned(),
+                            condition,
+                        ));
                     }
 
                     self.expect_token(Token::BraceOpen)?;
@@ -762,7 +872,8 @@ impl<'a> Parser<'a> {
                     let else_statement = if self.peek_is(Token::Else) {
                         self.advance()?;
                         Some(if self.peek_is(Token::If) {
-                            self.read_statements(context, return_type, mapper)?
+                            let statement = self.read_statement(context, return_type, mapper)?;
+                            vec![statement.ok_or(ParserError::UnexpectedToken(Token::If))?]
                         } else {
                             self.expect_token(Token::BraceOpen)?;
                             self.read_body(context, return_type, mapper)?
@@ -772,15 +883,20 @@ impl<'a> Parser<'a> {
                     };
 
                     Statement::If(condition, body, else_statement)
-                },
-                Token::BraceOpen => Statement::Scope(self.read_body(context, return_type, mapper)?),
+                }
+                Token::BraceOpen => {
+                    Statement::Scope(self.read_body(context, return_type, mapper)?)
+                }
                 Token::Let => Statement::Variable(self.read_variable(context, mapper, false)?),
                 Token::Return => {
                     let opt: Option<Expression> = if let Some(return_type) = return_type {
                         let expr = self.read_expr(Some(return_type), context, mapper)?;
                         let expr_type = self.get_type_from_expression(None, &expr, context)?;
                         if !expr_type.is_compatible_with(return_type) {
-                            return Err(ParserError::InvalidValueType(expr_type.into_owned(), return_type.clone()))
+                            return Err(ParserError::InvalidValueType(
+                                expr_type.into_owned(),
+                                return_type.clone(),
+                            ));
                         }
                         Some(expr)
                     } else {
@@ -805,7 +921,7 @@ impl<'a> Parser<'a> {
                     }
 
                     Statement::Continue
-                },
+                }
                 Token::Break => {
                     if !context.is_in_a_loop() {
                         return Err(ParserError::UnexpectedToken(Token::Break));
@@ -817,12 +933,28 @@ impl<'a> Parser<'a> {
                     }
 
                     Statement::Break
-                },
+                }
                 token => {
                     self.tokens.push_front(token);
                     Statement::Expression(self.read_expression(context, mapper)?)
                 }
             };
+            Ok(Some(statement))
+        } else {
+            Ok(None)
+        }
+    }
+    // Read all statements in a block
+    // return type is used to verify that the last statement is a return with a valid value type
+    // consume_brace is used to know if we should consume the open brace
+    fn read_statements(
+        &mut self,
+        context: &mut Context,
+        return_type: &Option<Type>,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Statement>, ParserError<'a>> {
+        let mut statements: Vec<Statement> = Vec::new();
+        while let Some(statement) = self.read_statement(context, return_type, mapper)? {
             statements.push(statement);
         }
 
@@ -830,14 +962,20 @@ impl<'a> Parser<'a> {
     }
 
     // Read the parameters for a function
-    fn read_parameters(&mut self, mapper: &mut IdMapper<'a>) -> Result<Vec<Parameter>, ParserError<'a>> {
+    fn read_parameters(
+        &mut self,
+        mapper: &mut IdMapper<'a>,
+    ) -> Result<Vec<Parameter>, ParserError<'a>> {
         let mut parameters: Vec<Parameter> = Vec::new();
         while self.peek_is_identifier() {
             let name = self.next_identifier()?;
             self.expect_token(Token::Colon)?;
             let value_type = self.read_type()?;
 
-            parameters.push(Parameter::new(mapper.register(Cow::Borrowed(name))?, value_type));
+            parameters.push(Parameter::new(
+                mapper.register(Cow::Borrowed(name))?,
+                value_type,
+            ));
 
             if self.peek_is_not(Token::Comma) {
                 break;
@@ -852,20 +990,23 @@ impl<'a> Parser<'a> {
     // Verify that the last statement is a return
     // We don't check the last statement directly has it would allow
     // to have dead code after a return
-    fn ends_with_return(&self, statements: &Vec<Statement>) -> Result<bool, ParserError<'a>> {
+    fn ends_with_return(statements: &Vec<Statement>) -> Result<bool, ParserError<'a>> {
         let mut ok = false;
         if let Some(statement) = statements.last() {
             match statement {
                 Statement::If(_, statements, else_statements) => {
                     // if its the last statement
-                    ok = self.ends_with_return(statements)?;
+                    ok = Self::ends_with_return(statements)?;
+                    // if it ends with a return, else must also end with a return
                     if let Some(statements) = else_statements.as_ref().filter(|_| ok) {
-                        self.ends_with_return(statements)?;
+                        ok = Self::ends_with_return(statements)?;
+                    } else {
+                        ok = false;
                     }
                 }
-                Statement::Return(_) => {
+                Statement::Return(Some(_)) => {
                     ok = true;
-                },
+                }
                 _ => {}
             }
         }
@@ -884,7 +1025,12 @@ impl<'a> Parser<'a> {
      * - Signature is based on function name, and parameters
      * - Entry function is a "public callable" function and must return a u64 value
      */
-    fn read_function(&mut self, entry: bool, context: &mut Context, constants_mapper: &IdMapper<'a>) -> Result<(), ParserError<'a>> {
+    fn read_function(
+        &mut self,
+        entry: bool,
+        context: &mut Context,
+        constants_mapper: &IdMapper<'a>,
+    ) -> Result<(), ParserError<'a>> {
         context.begin_scope();
 
         // we need to clone the constants mapper to use it as our own local mapper
@@ -899,10 +1045,10 @@ impl<'a> Parser<'a> {
             if let Type::Struct(struct_name) = &for_type {
                 // only types that are declared by the same program
                 if !self.struct_manager.has(struct_name) {
-                    return Err(ParserError::StructNotFound(struct_name.clone()))
+                    return Err(ParserError::StructNotFound(struct_name.clone()));
                 }
             } else {
-                return Err(ParserError::InvalidFunctionType(for_type))
+                return Err(ParserError::InvalidFunctionType(for_type));
             }
 
             let id = mapper.register(Cow::Borrowed(instance_name))?;
@@ -912,7 +1058,7 @@ impl<'a> Parser<'a> {
             (Some(id), Some(for_type), self.next_identifier()?)
         } else {
             let Token::Identifier(name) = token else {
-                return Err(ParserError::ExpectedIdentifierToken(token))
+                return Err(ParserError::ExpectedIdentifierToken(token));
             };
             (None, None, name)
         };
@@ -925,11 +1071,12 @@ impl<'a> Parser<'a> {
         let return_type: Option<Type> = if entry {
             // an entrypoint cannot be a method
             if for_type.is_some() {
-                return Err(ParserError::EntryFunctionCannotHaveForType)
+                return Err(ParserError::EntryFunctionCannotHaveForType);
             }
 
             Some(Type::U64)
-        } else if self.peek_is(Token::Colon) { // read returned type
+        } else if self.peek_is(Token::Colon) {
+            // read returned type
             self.advance()?;
             Some(self.read_type()?)
         } else {
@@ -937,9 +1084,13 @@ impl<'a> Parser<'a> {
         };
 
         let types: Vec<Type> = parameters.iter().map(|p| p.get_type().clone()).collect();
-        let id = self.functions_mapper.register(Signature::new(name.to_owned(), for_type.clone(), types))?;
+        let id = self.functions_mapper.register(Signature::new(
+            name.to_owned(),
+            for_type.clone(),
+            types,
+        ))?;
         if self.has_function(id) {
-            return Err(ParserError::FunctionSignatureAlreadyExist) 
+            return Err(ParserError::FunctionSignatureAlreadyExist);
         }
 
         let has_return_type = return_type.is_some();
@@ -954,20 +1105,24 @@ impl<'a> Parser<'a> {
         context.end_scope();
 
         // verify that the function ends with a return
-        if has_return_type && !self.ends_with_return(&statements)? {
-            return Err(ParserError::NoReturnFound)
+        if has_return_type && !Self::ends_with_return(&statements)? {
+            return Err(ParserError::NoReturnFound);
         }
 
         let function = match entry {
-            true => FunctionType::Entry(EntryFunction::new(parameters, statements, mapper.count() as u16)),
+            true => FunctionType::Entry(EntryFunction::new(
+                parameters,
+                statements,
+                mapper.count() as u16,
+            )),
             false => FunctionType::Declared(DeclaredFunction::new(
                 for_type,
                 instance_name,
                 parameters,
                 statements,
                 return_type,
-                mapper.count() as u16
-            ))
+                mapper.count() as u16,
+            )),
         };
 
         // push function before reading statements to allow recursive calls
@@ -984,18 +1139,18 @@ impl<'a> Parser<'a> {
         let path = self.advance()?;
 
         let Token::StringValue(path) = path else {
-            return Err(ParserError::InvalidImport)
+            return Err(ParserError::InvalidImport);
         };
 
         // We don't allow absolute path or path that contains ".."
         if path.starts_with("/") || path.contains("..") {
-            return Err(ParserError::InvalidImportPath(path.into_owned()))
+            return Err(ParserError::InvalidImportPath(path.into_owned()));
         }
 
         // If its a local import, we will import its content directly
         let is_local = path.ends_with(".xel");
         if !is_local {
-            return Err(ParserError::NotImplemented)
+            return Err(ParserError::NotImplemented);
         }
 
         // let content = fs::read_to_string(path.as_ref()).map_err(|e| ParserError::InvalidImportPath(e.to_string()))?;
@@ -1028,7 +1183,7 @@ impl<'a> Parser<'a> {
         } else {
             match self.functions.get(index - len) {
                 Some(func) => Ok(func.as_function()),
-                None => Err(ParserError::FunctionNotFound)
+                None => Err(ParserError::FunctionNotFound),
             }
         }
     }
@@ -1043,17 +1198,17 @@ impl<'a> Parser<'a> {
         let name = self.next_identifier()?;
         let mut chars = name.chars();
         if !chars.all(|c| c.is_ascii_alphanumeric()) {
-            return Err(ParserError::InvalidStructureName(name.to_owned()))
+            return Err(ParserError::InvalidStructureName(name.to_owned()));
         }
 
         // check if the first letter is in uppercase
         match name.chars().nth(0) {
             Some(v) => {
                 if !v.is_ascii_alphabetic() || !v.is_uppercase() {
-                    return Err(ParserError::InvalidStructureName(name.to_owned()))
+                    return Err(ParserError::InvalidStructureName(name.to_owned()));
                 }
-            },
-            None => return Err(ParserError::EmptyStructName)
+            }
+            None => return Err(ParserError::EmptyStructName),
         };
 
         let mut mapper: Mapper<'a, Cow<str>> = IdMapper::new();
@@ -1063,7 +1218,7 @@ impl<'a> Parser<'a> {
         for (i, param) in params.into_iter().enumerate() {
             let (id, value_type) = param.consume();
             if i != id as usize {
-                return Err(ParserError::InvalidStructFieldOrder)
+                return Err(ParserError::InvalidStructFieldOrder);
             }
 
             fields.push(value_type);
@@ -1071,10 +1226,7 @@ impl<'a> Parser<'a> {
 
         self.expect_token(Token::BraceClose)?;
 
-        Ok((name, StructBuilder {
-            fields,
-            mapper,
-        }))
+        Ok((name, StructBuilder { fields, mapper }))
     }
 
     // Parse the tokens and return a Program
@@ -1092,20 +1244,24 @@ impl<'a> Parser<'a> {
                     let var = self.read_variable(&mut context, &mut constants_mapper, true)?;
                     let id = var.id;
                     if !self.constants.insert(var) {
-                        return Err(ParserError::VariableIdAlreadyUsed(id))
+                        return Err(ParserError::VariableIdAlreadyUsed(id));
                     }
-                },
+                }
                 Token::Function => self.read_function(false, &mut context, &constants_mapper)?,
                 Token::Entry => self.read_function(true, &mut context, &constants_mapper)?,
                 Token::Struct => {
                     let (name, builder) = self.read_struct()?;
                     self.struct_manager.add(Cow::Borrowed(name), builder)?;
-                },
-                token => return Err(ParserError::UnexpectedToken(token))
+                }
+                token => return Err(ParserError::UnexpectedToken(token)),
             };
         }
 
-        let program = Program::with(self.constants, self.struct_manager.finalize(), self.functions);
+        let program = Program::with(
+            self.constants,
+            self.struct_manager.finalize(),
+            self.functions,
+        );
         Ok((program, self.functions_mapper))
     }
 }
@@ -1116,7 +1272,7 @@ mod tests {
 
     #[track_caller]
     fn test_parser(tokens: Vec<Token>) -> Program {
-        let env = EnvironmentBuilder::new();
+        let env = EnvironmentBuilder::default();
         test_parser_with_env(tokens, &env)
     }
 
@@ -1130,11 +1286,16 @@ mod tests {
     #[track_caller]
     fn test_parser_statement(tokens: Vec<Token>, variables: Vec<(&str, Type)>) -> Vec<Statement> {
         let env = EnvironmentBuilder::new();
-        test_parser_statement_with_env(tokens, variables, env)
+        test_parser_statement_with(tokens, variables, &None, env)
     }
 
     #[track_caller]
-    fn test_parser_statement_with_env(tokens: Vec<Token>, variables: Vec<(&str, Type)>, env: EnvironmentBuilder) -> Vec<Statement> {
+    fn test_parser_statement_with(
+        tokens: Vec<Token>,
+        variables: Vec<(&str, Type)>,
+        return_type: &Option<Type>,
+        env: EnvironmentBuilder,
+    ) -> Vec<Statement> {
         let mut parser = Parser::new(VecDeque::from(tokens), &env);
         let mut mapper = IdMapper::new();
         let mut context = Context::new();
@@ -1144,7 +1305,18 @@ mod tests {
             context.register_variable(id, t).unwrap();
         }
 
-        parser.read_statements(&mut context, &None, &mut mapper).unwrap()
+        parser
+            .read_statements(&mut context, return_type, &mut mapper)
+            .unwrap()
+    }
+
+    fn test_parser_statement_with_return_type(
+        tokens: Vec<Token>,
+        variables: Vec<(&str, Type)>,
+        return_type: Type,
+    ) -> Vec<Statement> {
+        let env = EnvironmentBuilder::new();
+        test_parser_statement_with(tokens, variables, &Some(return_type), env)
     }
 
     #[test]
@@ -1156,11 +1328,87 @@ mod tests {
             Token::ParenthesisClose,
             Token::BraceOpen,
             Token::Return,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let program = test_parser(tokens);
         assert_eq!(program.functions().len(), 1);
+    }
+
+    #[test]
+    fn test_function_call_in_expr() {
+        /*
+        function foo(): bool {
+            let array: u64[] = [1, 2, 3];
+            return 0 > array.len()
+        }
+        */
+        let tokens = vec![
+            Token::Function,
+            Token::Identifier("foo"),
+            Token::ParenthesisOpen,
+            Token::ParenthesisClose,
+            Token::Colon,
+            Token::Bool,
+            Token::BraceOpen,
+            Token::Let,
+            Token::Identifier("array"),
+            Token::Colon,
+            Token::U64,
+            Token::BracketOpen,
+            Token::BracketClose,
+            Token::OperatorAssign,
+            Token::BracketOpen,
+            Token::U64Value(1),
+            Token::Comma,
+            Token::U64Value(2),
+            Token::Comma,
+            Token::U64Value(3),
+            Token::BracketClose,
+            Token::Return,
+            Token::U64Value(0),
+            Token::OperatorGreaterThan,
+            Token::Identifier("array"),
+            Token::Dot,
+            Token::Identifier("len"),
+            Token::ParenthesisOpen,
+            Token::ParenthesisClose,
+            Token::BraceClose,
+        ];
+
+        let program = test_parser(tokens);
+        let statements = vec![
+            Statement::Variable(DeclarationStatement {
+                id: 0,
+                value_type: Type::Array(Box::new(Type::U64)),
+                value: Expression::ArrayConstructor(vec![
+                    Expression::Value(Value::U64(1)),
+                    Expression::Value(Value::U64(2)),
+                    Expression::Value(Value::U64(3)),
+                ]),
+            }),
+            Statement::Return(Some(Expression::Operator(
+                Operator::GreaterThan,
+                Box::new(Expression::Value(Value::U32(0))),
+                Box::new(Expression::FunctionCall(
+                    Some(Box::new(Expression::Variable(0))),
+                    0,
+                    Vec::new(),
+                )),
+            ))),
+        ];
+
+        assert_eq!(
+            *program.functions().get(0).unwrap(),
+            FunctionType::Declared(DeclaredFunction::new(
+                None,
+                None,
+                Vec::new(),
+                statements,
+                Some(Type::Bool),
+                1
+            ))
+        );
     }
 
     #[test]
@@ -1173,7 +1421,7 @@ mod tests {
             Token::BraceOpen,
             Token::Return,
             Token::U64Value(0),
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let program = test_parser(tokens);
@@ -1193,7 +1441,7 @@ mod tests {
             Token::ParenthesisOpen,
             Token::ParenthesisClose,
             Token::BraceOpen,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let mut env = EnvironmentBuilder::new();
@@ -1218,7 +1466,7 @@ mod tests {
             Token::ParenthesisClose,
             Token::BraceOpen,
             Token::Return,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let program = test_parser(tokens);
@@ -1237,7 +1485,7 @@ mod tests {
             Token::BraceOpen,
             Token::Return,
             Token::U64Value(0),
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let program = test_parser(tokens);
@@ -1253,15 +1501,11 @@ mod tests {
             Token::In,
             Token::Identifier("array"),
             Token::BraceOpen,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
-        let statements = test_parser_statement(
-            tokens,
-            vec![
-                ("array", Type::Array(Box::new(Type::U64)))
-            ]
-        );
+        let statements =
+            test_parser_statement(tokens, vec![("array", Type::Array(Box::new(Type::U64)))]);
 
         assert_eq!(statements.len(), 1);
     }
@@ -1283,7 +1527,7 @@ mod tests {
             Token::OperatorPlusAssign,
             Token::U64Value(1),
             Token::BraceOpen,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let statements = test_parser_statement(tokens, Vec::new());
@@ -1299,7 +1543,7 @@ mod tests {
             Token::OperatorLessThan,
             Token::U64Value(10),
             Token::BraceOpen,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let statements = test_parser_statement(tokens, vec![("i", Type::U64)]);
@@ -1315,7 +1559,7 @@ mod tests {
             Token::OperatorLessThan,
             Token::U64Value(10),
             Token::BraceOpen,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let statements = test_parser_statement(tokens, vec![("i", Type::U64)]);
@@ -1334,7 +1578,7 @@ mod tests {
             Token::BraceClose,
             Token::Else,
             Token::BraceOpen,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let statements = test_parser_statement(tokens, vec![("i", Type::U64)]);
@@ -1357,11 +1601,180 @@ mod tests {
             Token::OperatorLessThan,
             Token::U64Value(20),
             Token::BraceOpen,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let statements = test_parser_statement(tokens, vec![("i", Type::U64)]);
         assert_eq!(statements.len(), 1);
+    }
+
+    #[test]
+    fn test_if_return() {
+        // if i < 10 { nothing } return 0
+        let mut tokens = vec![
+            Token::If,
+            Token::Identifier("i"),
+            Token::OperatorLessThan,
+            Token::U64Value(10),
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::Return,
+        ];
+
+        let statements = test_parser_statement(tokens.clone(), vec![("i", Type::U64)]);
+        assert_eq!(
+            statements,
+            vec![
+                Statement::If(
+                    Expression::Operator(
+                        Operator::LessThan,
+                        Box::new(Expression::Variable(0)),
+                        Box::new(Expression::Value(Value::U64(10)))
+                    ),
+                    Vec::new(),
+                    None
+                ),
+                Statement::Return(None)
+            ]
+        );
+
+        tokens.push(Token::U64Value(0));
+
+        let statements =
+            test_parser_statement_with_return_type(tokens, vec![("i", Type::U64)], Type::U64);
+        assert_eq!(
+            statements,
+            vec![
+                Statement::If(
+                    Expression::Operator(
+                        Operator::LessThan,
+                        Box::new(Expression::Variable(0)),
+                        Box::new(Expression::Value(Value::U64(10)))
+                    ),
+                    Vec::new(),
+                    None
+                ),
+                Statement::Return(Some(Expression::Value(Value::U64(0))))
+            ]
+        );
+    }
+
+    #[test]
+    fn test_if_else_if_else_return() {
+        // if i < 10 {} else if i < 20 {} else {} return 0
+        let tokens = vec![
+            Token::If,
+            Token::Identifier("i"),
+            Token::OperatorLessThan,
+            Token::U64Value(10),
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::Else,
+            Token::If,
+            Token::Identifier("i"),
+            Token::OperatorLessThan,
+            Token::U64Value(20),
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::Else,
+            Token::BraceOpen,
+            Token::BraceClose,
+            Token::Return,
+            Token::U64Value(0),
+        ];
+
+        let statements =
+            test_parser_statement_with_return_type(tokens, vec![("i", Type::U64)], Type::U64);
+        assert_eq!(
+            statements,
+            vec![
+                Statement::If(
+                    Expression::Operator(
+                        Operator::LessThan,
+                        Box::new(Expression::Variable(0)),
+                        Box::new(Expression::Value(Value::U64(10)))
+                    ),
+                    Vec::new(),
+                    Some(vec![Statement::If(
+                        Expression::Operator(
+                            Operator::LessThan,
+                            Box::new(Expression::Variable(0)),
+                            Box::new(Expression::Value(Value::U64(20)))
+                        ),
+                        Vec::new(),
+                        Some(Vec::new())
+                    )])
+                ),
+                Statement::Return(Some(Expression::Value(Value::U64(0))))
+            ]
+        );
+    }
+
+    #[test]
+    fn test_ends_with_return() {
+        const RETURN: Statement = Statement::Return(Some(Expression::Value(Value::U64(0))));
+        let statements = vec![RETURN];
+        assert!(Parser::ends_with_return(&statements).unwrap());
+
+        let statements = vec![
+            RETURN,
+            Statement::Expression(Expression::Value(Value::U64(0))),
+        ];
+        assert!(!Parser::ends_with_return(&statements).unwrap());
+
+        // if ... return
+        let statements = vec![
+            Statement::If(Expression::Value(Value::Boolean(true)), Vec::new(), None),
+            RETURN,
+        ];
+        assert!(Parser::ends_with_return(&statements).unwrap());
+
+        let statements = vec![Statement::If(
+            Expression::Value(Value::Boolean(true)),
+            Vec::new(),
+            None,
+        )];
+        assert!(!Parser::ends_with_return(&statements).unwrap());
+
+        // if else
+        let statements = vec![Statement::If(
+            Expression::Value(Value::Boolean(true)),
+            Vec::new(),
+            Some(Vec::new()),
+        )];
+        assert!(!Parser::ends_with_return(&statements).unwrap());
+
+        // if return else return
+        let statements = vec![Statement::If(
+            Expression::Value(Value::Boolean(true)),
+            vec![RETURN],
+            Some(vec![RETURN]),
+        )];
+        assert!(Parser::ends_with_return(&statements).unwrap());
+
+        // if return else if return else no return
+        let statements = vec![Statement::If(
+            Expression::Value(Value::Boolean(true)),
+            vec![RETURN],
+            Some(vec![Statement::If(
+                Expression::Value(Value::Boolean(true)),
+                vec![RETURN],
+                None,
+            )]),
+        )];
+        assert!(!Parser::ends_with_return(&statements).unwrap());
+
+        // if return else if return else return
+        let statements = vec![Statement::If(
+            Expression::Value(Value::Boolean(true)),
+            vec![RETURN],
+            Some(vec![Statement::If(
+                Expression::Value(Value::Boolean(true)),
+                vec![RETURN],
+                Some(vec![RETURN]),
+            )]),
+        )];
+        assert!(Parser::ends_with_return(&statements).unwrap());
     }
 
     #[test]
@@ -1411,7 +1824,7 @@ mod tests {
             Token::Identifier("aaa_message"),
             Token::Colon,
             Token::String,
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
         let program = test_parser(tokens.clone());
@@ -1419,10 +1832,10 @@ mod tests {
 
         // Also test with a environment
         let mut env = EnvironmentBuilder::new();
-        env.register_structure("Message", vec![
-            ("message_id", Type::U64),
-            ("message", Type::String)
-        ]);
+        env.register_structure(
+            "Message",
+            vec![("message_id", Type::U64), ("message", Type::String)],
+        );
 
         // Create a struct instance
         let tokens = vec![
@@ -1440,10 +1853,10 @@ mod tests {
             Token::Identifier("message"),
             Token::Colon,
             Token::StringValue(Cow::Borrowed("hello")),
-            Token::BraceClose
+            Token::BraceClose,
         ];
 
-        let statements = test_parser_statement_with_env(tokens, Vec::new(), env);
+        let statements = test_parser_statement_with(tokens, Vec::new(), &None, env);
         assert_eq!(statements.len(), 1);
     }
 }

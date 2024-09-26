@@ -15,10 +15,8 @@ pub enum OpCodeWithArgs {
         // Register index
         register_index: u16
     },
-    // pop, store in registers
-    MemoryStore,
-    // pop, store in registers[index]
-    MemoryAssign {
+    // pop, set in registers[index]
+    MemorySet {
         register_index: u16
     },
     // load from stack, load u16, load sub value, push
@@ -57,6 +55,13 @@ pub enum OpCodeWithArgs {
     },
     // pop value, get iterable length, push
     IterableLength,
+    IterableBegin,
+    // Push next element of an iterable
+    // If no element left, jump to defined address
+    IterableNext {
+        // Jump to address if no next element
+        addr: u32
+    },
     // Return will stop processing the opcodes of a chunk
     Return,
 
@@ -173,8 +178,7 @@ impl OpCodeWithArgs {
         match self {
             OpCodeWithArgs::Constant { .. } => OpCode::Constant,
             OpCodeWithArgs::MemoryLoad { .. } => OpCode::MemoryLoad,
-            OpCodeWithArgs::MemoryStore => OpCode::MemoryStore,
-            OpCodeWithArgs::MemoryAssign { .. } => OpCode::MemoryAssign,
+            OpCodeWithArgs::MemorySet { .. } => OpCode::MemorySet,
             OpCodeWithArgs::SubLoad { .. } => OpCode::SubLoad,
             OpCodeWithArgs::Pop => OpCode::Pop,
             OpCodeWithArgs::Copy => OpCode::Copy,
@@ -183,7 +187,11 @@ impl OpCodeWithArgs {
             OpCodeWithArgs::Swap2 { .. } => OpCode::Swap2,
             OpCodeWithArgs::Jump { .. } => OpCode::Jump,
             OpCodeWithArgs::JumpIfFalse { .. } => OpCode::JumpIfFalse,
+
             OpCodeWithArgs::IterableLength => OpCode::IterableLength,
+            OpCodeWithArgs::IterableBegin => OpCode::IterableBegin,
+            OpCodeWithArgs::IterableNext { .. } => OpCode::IterableNext,
+
             OpCodeWithArgs::Return => OpCode::Return,
             OpCodeWithArgs::ArrayCall { .. } => OpCode::ArrayCall,
             OpCodeWithArgs::Cast { .. } => OpCode::Cast,
@@ -235,7 +243,7 @@ impl OpCodeWithArgs {
         match self {
             OpCodeWithArgs::Constant { index } => chunk.write_u16(*index),
             OpCodeWithArgs::MemoryLoad { register_index } => chunk.write_u16(*register_index),
-            OpCodeWithArgs::MemoryAssign { register_index } => chunk.write_u16(*register_index),
+            OpCodeWithArgs::MemorySet { register_index } => chunk.write_u16(*register_index),
             OpCodeWithArgs::SubLoad { index } => chunk.write_u16(*index),
             OpCodeWithArgs::Copy2 { stack_index } => chunk.write_u16(*stack_index),
             OpCodeWithArgs::Swap { stack_index } => chunk.write_u16(*stack_index),
@@ -257,6 +265,7 @@ impl OpCodeWithArgs {
                 chunk.write_bool(*on_value);
                 chunk.write_u8(*args_count);
             },
+            OpCodeWithArgs::IterableNext { addr } => chunk.write_u32(*addr),
             OpCodeWithArgs::NewArray { length } => chunk.write_u32(*length),
             OpCodeWithArgs::NewStruct { struct_id } => chunk.write_u16(*struct_id),
             _ => {}
@@ -287,19 +296,12 @@ impl OpCodeWithArgs {
                     register_index: args[0].parse().map_err(|_| "Invalid register index")?
                 }
             }
-            "MEMORYSTORE" => {
-                if !args.is_empty() {
-                    return Err("Invalid args count");
-                }
-
-                OpCodeWithArgs::MemoryStore
-            }
-            "MEMORYASSIGN" => {
+            "MEMORYSET" => {
                 if args.len() != 1 {
                     return Err("Invalid args count");
                 }
 
-                OpCodeWithArgs::MemoryAssign {
+                OpCodeWithArgs::MemorySet {
                     register_index: args[0].parse().map_err(|_| "Invalid register index")?
                 }
             }
@@ -394,6 +396,30 @@ impl OpCodeWithArgs {
                 }
 
                 OpCodeWithArgs::IterableLength
+            },
+            "ITERABLEBEGIN" => {
+                if !args.is_empty() {
+                    return Err("Invalid args count");
+                }
+
+                OpCodeWithArgs::IterableBegin
+            },
+            "ITERABLENEXT" => {
+                if args.len() != 1 {
+                    return Err("Invalid args count");
+                }
+
+                let addr_arg = args[0];
+                let addr = if addr_arg.starts_with(":") {
+                    let label = &addr_arg[1..];
+                    goto.iter().find(|(l, _)| *l == label).map(|(_, a)| *a).ok_or("Invalid label")?
+                } else {
+                    addr_arg.parse().map_err(|_| "Invalid address")?
+                };
+
+                OpCodeWithArgs::IterableNext {
+                    addr
+                }
             },
             "RETURN" => {
                 if !args.is_empty() {

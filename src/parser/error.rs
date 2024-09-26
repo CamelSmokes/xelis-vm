@@ -1,11 +1,13 @@
 use crate::{
     ast::{Expression, Token},
     types::Type,
+    values::ValueError,
     IdentifierType, LexerError,
 };
 
 #[derive(Debug)]
 pub enum ParserError<'a> {
+    ValueError(ValueError),
     InvalidStructFieldOrder,
     UnexpectedPathInFunctionCall,
     InvalidImport,
@@ -67,4 +69,10 @@ pub enum ParserError<'a> {
     InvalidNumberValueForType,
     UnmatchedParenthesis,
     EmptyOutputStack,
+}
+
+impl<'a> From<ValueError> for ParserError<'a> {
+    fn from(e: ValueError) -> Self {
+        ParserError::ValueError(e)
+    }
 }
