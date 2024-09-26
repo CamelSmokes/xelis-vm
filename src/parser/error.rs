@@ -1,8 +1,7 @@
 use crate::{
     ast::{Expression, Token},
     types::Type,
-    IdentifierType,
-    LexerError
+    IdentifierType, LexerError,
 };
 
 #[derive(Debug)]
@@ -65,5 +64,7 @@ pub enum ParserError<'a> {
     InvalidFunctionType(Type),
     EmptyArrayConstructor,
     ExpectedNumberType,
-    InvalidNumberValueForType
+    InvalidNumberValueForType,
+    UnmatchedParenthesis,
+    EmptyOutputStack,
 }

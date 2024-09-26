@@ -8,14 +8,14 @@ entry main() {
         println(a)
     }
 
-    let i: u64 = 20
-    while i > 0 {
-        i -= 1
-        if i == 17 {
+    let j: u64 = 20
+    while j > 0 {
+        j -= 1
+        if j == 17 {
             continue
         }
 
-        println(i)
+        println(j)
     }
 
     while true {

@@ -29,7 +29,7 @@ fn main() {
     // Build the program
     start = Instant::now();
     // let path = Path::new(file).parent().map(|p| p.to_str()).flatten();
-    let (program, mapper) = Parser::new(tokens, &builder).parse().unwrap();
+    let (program, mapper) = Parser::new(tokens, &builder).parse().expect("Parser Error");
     println!("Parser: {:?}", start.elapsed());
 
     // Create the VM instance

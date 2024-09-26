@@ -486,7 +486,6 @@ impl<'a> Interpreter<'a> {
                 let val = self.execute_expression_and_expect_value(&expr, stack, state)?.as_bool()?;
                 Ok(Some(Path::Owned(Value::Boolean(!val))))
             }
-            Expression::SubExpression(expr) => self.execute_expression(expr, stack, state),
             Expression::Ternary(condition, left, right) => {
                 if self.execute_expression_and_expect_value(&condition, stack, state)?.as_bool()? {
                     Ok(Some(self.execute_expression_and_expect_value(&left, stack, state)?))

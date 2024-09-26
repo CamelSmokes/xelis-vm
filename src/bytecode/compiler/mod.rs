@@ -112,9 +112,6 @@ impl<'a> Compiler<'a> {
                 self.compile_expr(chunk, expr_index);
                 chunk.emit_opcode(OpCode::ArrayCall);
             },
-            Expression::SubExpression(expr) => {
-                self.compile_expr(chunk, expr);
-            },
             Expression::Ternary(condition, valid, invalid) => {
                 self.compile_expr(chunk, condition);
 
